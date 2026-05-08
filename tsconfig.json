@@ -1,0 +1,3 @@
+{
+  "extends": "@skyclad-bun/config/tsconfig.base.json"
+}
