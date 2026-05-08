@@ -8,7 +8,7 @@ type ResolveIngestTargetInput = {
   query: string;
 };
 
-const DEFAULT_PAPER_RAG_BASE_URL = "https://stoic-fennec-673.convex.site";
+const DEFAULT_PAPER_RAG_BASE_URL = "http://localhost:3000";
 
 async function callBackend<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${DEFAULT_PAPER_RAG_BASE_URL}${path}`, {
@@ -29,14 +29,15 @@ export default function setup(pi: ExtensionAPI) {
   pi.registerTool({
     name: "resolve_ingest_target",
     label: "Resolve Ingest Target",
-    description: "Resolve a paper reference to an arXiv HTML ingestion target.",
+    description:
+      "Resolve a paper reference to an arXiv HTML ingestion target. NOTE: Do not retry if you encounter 429 status code",
     parameters: Type.Object({
       paperName: Type.String(),
       query: Type.String(),
     }),
     //@ts-ignore
     async execute(_toolCallId, params: ResolveIngestTargetInput) {
-      const result = await callBackend<unknown>("/resolve_ingest_target", params);
+      const result = await callBackend<unknown>("/api/ingest/resolve_ingest_target", params);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         details: {},

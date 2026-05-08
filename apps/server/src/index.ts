@@ -1,8 +1,12 @@
 import { cors } from "@elysiajs/cors";
 import { env } from "@skyclad-bun/env/server";
 import { Elysia } from "elysia";
+import { logger } from "@bogeychan/elysia-logger";
+
+import { ingestRoutes } from "./features/ingest/routes";
 
 new Elysia()
+  .use(logger())
   .use(
     cors({
       origin: env.CORS_ORIGIN,
@@ -10,6 +14,7 @@ new Elysia()
     }),
   )
   .get("/", () => "OK")
+  .use(ingestRoutes)
   .listen(3000, () => {
     console.log("Server is running on http://localhost:3000");
   });
