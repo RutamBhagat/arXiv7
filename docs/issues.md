@@ -1,0 +1,8 @@
+- arxiv api does not respond with json, it only sends back xml
+https://arxiv.org/html/1706.03762v7
+- recently i discovered my newfound hatred for cleaning up html pages for usable data
+- apparently math equations are really really hard to preserve
+- even pdf GROBID is bad at it
+- for arXiv, a PDF-first pipeline is the wrong default. The best signal is usually the public TeX source; PDF/OCR parsers should be fallbacks, not the primary ingestion path
+- arXiv TeX source → structured XML/HTML+MathML via LaTeXML → custom structural chunker → hybrid text + formula retrieval
+- you need bash commands to properly extract the paper
