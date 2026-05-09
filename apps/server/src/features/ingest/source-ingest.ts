@@ -189,7 +189,15 @@ export async function embed(input: string) {
 }
 
 export async function ensureIngestTools() {
+  const missing: string[] = [];
+
   for (const tool of ingestTools) {
-    await $`command -v ${tool}`.quiet();
+    try {
+      await $`command -v ${tool}`.quiet();
+    } catch {
+      missing.push(tool);
+    }
   }
+
+  return missing;
 }
