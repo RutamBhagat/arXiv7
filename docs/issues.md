@@ -9,3 +9,5 @@ https://arxiv.org/html/1706.03762v7
 - needed db sql migration change to prevent db push issue due to pgvector initial setup
 - use gemini-embedding-2 with 3072 dimensions
 - arxiv rate limits are painful
+- gemini embedding rate limits roughly 100 requests per min and 1000 requests per day
+https://aistudio.google.com/rate-limit

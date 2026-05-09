@@ -130,9 +130,15 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
           `Summary: ${body.summary}`,
         ].join("\n");
         const metadataEmbedding = await embed(metadataText);
-        const sectionEmbeddings = await Promise.all(
-          sections.map((section) => embed(`title: ${body.title} | text: ${section.markdown}`)),
-        );
+        const sectionEmbeddings: number[][] = [];
+        for (const [index, section] of sections.entries()) {
+          if (index > 0) {
+            // this is required because of gemini free tier rate limits 100 RPS
+            await Bun.sleep(1_000);
+          }
+          const sectionEmbedding = await embed(`title: ${body.title} | text: ${section.markdown}`);
+          sectionEmbeddings.push(sectionEmbedding);
+        }
         const completedAt = new Date();
 
         await db.transaction(async (tx) => {
