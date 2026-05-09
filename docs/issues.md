@@ -11,3 +11,4 @@ https://arxiv.org/html/1706.03762v7
 - arxiv rate limits are painful
 - gemini embedding rate limits roughly 100 requests per min and 1000 requests per day
 https://aistudio.google.com/rate-limit
+- section markdown too large because of tables

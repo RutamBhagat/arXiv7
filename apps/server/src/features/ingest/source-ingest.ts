@@ -29,8 +29,28 @@ type SectionDraft = Omit<SectionDoc, "docIndex" | "sourceFile"> & {
 
 const mainTexNames = new Set(["main.tex", "paper.tex", "ms.tex", "article.tex", "arxiv.tex"]);
 const ingestTools = ["tar", "latexpand", "pandoc"];
-const embeddingModel = "gemini-embedding-2";
+const embeddingModel = "qwen3-embedding:8b-8k";
+const ollamaEmbedUrl = `${env.OLLAMA_BASE_URL}/api/embed`;
 const minSectionBodyCharacters = 120;
+const maxSectionSlugLength = 96;
+const maxEmbeddingInputCharacters = 28000;
+
+export function buildSectionEmbeddingText(title: string, markdown: string) {
+  const tokens = marked.lexer(markdown, { gfm: true });
+  const chunks: string[] = [];
+  for (const token of tokens) {
+    if (token.type === "table") continue;
+    if ("text" in token && typeof token.text === "string") chunks.push(token.text);
+    if ("raw" in token && typeof token.raw === "string" && token.type === "code")
+      chunks.push(token.raw);
+  }
+  const plainText = chunks
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxEmbeddingInputCharacters);
+  return `title: ${title} | text: ${plainText}`;
+}
 
 export async function ensureIngestTools() {
   const missing: string[] = [];
@@ -101,10 +121,14 @@ export function splitMarkdown(markdown: string): SectionDoc[] {
       docIndex,
       markdown: sectionMarkdown,
       // Keep ordering stable while making generated files readable during debugging.
-      sourceFile: `${docIndex.toString().padStart(3, "0")}-${slugify(
-        current.sectionTitle.replace(/\{#[^}]+\}/g, ""),
-        { lower: true, strict: true },
-      )}.md`,
+      sourceFile: `${docIndex.toString().padStart(3, "0")}-${
+        slugify(current.sectionTitle.replace(/\{#[^}]+\}/g, ""), {
+          lower: true,
+          strict: true,
+        })
+          .slice(0, maxSectionSlugLength)
+          .replace(/-+$/g, "") || "section"
+      }.md`,
     });
   };
 
@@ -168,30 +192,28 @@ export async function writeSectionFiles(
 }
 
 export async function embed(input: string) {
-  // gemini embeddings keep ingestion free while still fitting pgvector search
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${embeddingModel}:embedContent`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": env.GEMINI_API_KEY,
-      },
-      body: JSON.stringify({
-        model: `models/${embeddingModel}`,
-        // the db schema fixes the vector size, so request that size directly from gemini
-        output_dimensionality: embeddingDimensions,
-        content: { parts: [{ text: input }] },
-      }),
+  const response = await fetch(ollamaEmbedUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
     },
-  );
+    body: JSON.stringify({
+      model: embeddingModel,
+      input,
+      dimensions: embeddingDimensions,
+      truncate: true,
+    }),
+  });
   if (!response.ok) {
-    throw new Error(`Gemini embedding failed: ${response.status} ${await response.text()}`);
+    throw new Error(`Ollama embedding failed: ${response.status} ${await response.text()}`);
   }
 
-  // gemini returns the vector under embedding.values for single embedContent calls
-  const body = (await response.json()) as { embedding: { values: number[] } };
-  return body.embedding.values;
+  const body = (await response.json()) as { embeddings: number[][] };
+  const embedding = body.embeddings[0];
+  if (!embedding) {
+    throw new Error("Ollama embedding response missing embeddings[0]");
+  }
+  return embedding;
 }
 
 function buildSection(
@@ -209,10 +231,14 @@ function buildSection(
     sectionKind: getSectionKind(title),
     markdown,
     // Keep the fallback filename shape consistent with normal section documents.
-    sourceFile: `${docIndex.toString().padStart(3, "0")}-${slugify(
-      title.replace(/\{#[^}]+\}/g, ""),
-      { lower: true, strict: true },
-    )}.md`,
+    sourceFile: `${docIndex.toString().padStart(3, "0")}-${
+      slugify(title.replace(/\{#[^}]+\}/g, ""), {
+        lower: true,
+        strict: true,
+      })
+        .slice(0, maxSectionSlugLength)
+        .replace(/-+$/g, "") || "section"
+    }.md`,
   };
 }
 

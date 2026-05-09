@@ -11,6 +11,7 @@ import {
   splitMarkdown,
   writeSectionFiles,
   embed,
+  buildSectionEmbeddingText,
 } from "./source-ingest";
 
 export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
@@ -102,8 +103,8 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
       try {
         // build the source workspace from the caller-provided arxiv source archive
         await $`mkdir -p ${sourceDir}`;
-        const sourceResponse = await fetch(sourceUrl);
-        await Bun.write(sourceArchive, sourceResponse);
+        // const sourceResponse = await fetch(sourceUrl);
+        // await Bun.write(sourceArchive, sourceResponse);
         await $`tar -xzf ${sourceArchive} -C ${sourceDir}`;
 
         // flatten included tex files so pandoc sees one complete latex document
@@ -131,12 +132,9 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
         ].join("\n");
         const metadataEmbedding = await embed(metadataText);
         const sectionEmbeddings: number[][] = [];
-        for (const [index, section] of sections.entries()) {
-          if (index > 0) {
-            // this is required because of gemini free tier rate limits 100 RPS
-            await Bun.sleep(1_000);
-          }
-          const sectionEmbedding = await embed(`title: ${body.title} | text: ${section.markdown}`);
+        for (const section of sections) {
+          const sectionEmbeddingInput = buildSectionEmbeddingText(body.title, section.markdown);
+          const sectionEmbedding = await embed(sectionEmbeddingInput);
           sectionEmbeddings.push(sectionEmbedding);
         }
         const completedAt = new Date();

@@ -6,7 +6,7 @@ export const env = createEnv({
   server: {
     DATABASE_URL: z.string().min(1),
     CORS_ORIGIN: z.url(),
-    GEMINI_API_KEY: z.string().min(1),
+    OLLAMA_BASE_URL: z.url().default("http://localhost:11434"),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   },
   runtimeEnv: process.env,
