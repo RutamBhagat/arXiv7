@@ -12,6 +12,11 @@ type ResolvePaperIdInput = {
   query: string;
 };
 
+type QueryPaperDocsInput = {
+  paperId: string;
+  query: string;
+};
+
 type IngestPaperSourceInput = {
   arxivId: string;
   paperId: string;
@@ -96,6 +101,24 @@ export default function setup(pi: ExtensionAPI) {
     //@ts-ignore
     async execute(_toolCallId, params: ResolvePaperIdInput) {
       const result = await callBackend<unknown>("/api/retrieval/resolve_paper_id", params);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        details: {},
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "query_paper_docs",
+    label: "Query Paper Docs",
+    description: "Query grounded snippets for an already-ingested paperId.",
+    parameters: Type.Object({
+      paperId: Type.String(),
+      query: Type.String(),
+    }),
+    //@ts-ignore
+    async execute(_toolCallId, params: QueryPaperDocsInput) {
+      const result = await callBackend<unknown>("/api/retrieval/query_paper_docs", params);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         details: {},

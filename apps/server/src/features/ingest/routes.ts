@@ -29,7 +29,6 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
       return {
         ok: response.ok,
         result: candidates,
-        args: body,
       };
     },
     {
