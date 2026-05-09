@@ -3,10 +3,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 //@ts-ignore
 import { Type } from "typebox";
 
-type ResolveIngestTargetInput = {
-  paperName: string;
-};
-
 type ResolvePaperIdInput = {
   paperName: string;
   query: string;
@@ -15,15 +11,6 @@ type ResolvePaperIdInput = {
 type QueryPaperDocsInput = {
   paperId: string;
   query: string;
-};
-
-type IngestPaperSourceInput = {
-  arxivId: string;
-  paperId: string;
-  title: string;
-  authors: string[];
-  summary: string;
-  sourceUrl: string;
 };
 
 const DEFAULT_PAPER_RAG_BASE_URL = "http://localhost:3000";
@@ -45,55 +32,10 @@ async function callBackend<T>(path: string, body: unknown): Promise<T> {
 
 export default function setup(pi: ExtensionAPI) {
   pi.registerTool({
-    name: "resolve_ingest_target",
-    label: "Resolve Ingest Target",
-    description:
-      "Resolve a paper reference to an arXiv source ingestion target. NOTE: Do not retry if you encounter 429 status code",
-    parameters: Type.Object({
-      paperName: Type.String(),
-    }),
-    //@ts-ignore
-    async execute(_toolCallId, params: ResolveIngestTargetInput) {
-      const result = await callBackend<unknown>("/api/ingest/resolve_ingest_target", params);
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        details: {},
-      };
-    },
-  });
-
-  pi.registerTool({
-    name: "ingest_paper_source",
-    label: "Ingest Paper Source",
-    description:
-      "Ingest a selected arXiv source target. Use this after resolve_ingest_target with one of its returned candidates unless the same fields were supplied from elsewhere.",
-    parameters: Type.Object({
-      arxivId: Type.String(),
-      paperId: Type.String(),
-      title: Type.String(),
-      authors: Type.Array(Type.String()),
-      summary: Type.String(),
-      sourceUrl: Type.String(),
-    }),
-    //@ts-ignore
-    async execute(_toolCallId, params: IngestPaperSourceInput) {
-      const arxivId = params.arxivId.replace(/v\d+$/i, "");
-      const result = await callBackend<unknown>("/api/ingest/ingest_paper_source", {
-        ...params,
-        arxivId,
-        paperId: `/arxiv/${arxivId}`,
-        sourceUrl: `https://arxiv.org/src/${arxivId}`,
-      });
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        details: {},
-      };
-    },
-  });
-  pi.registerTool({
     name: "resolve_paper_id",
     label: "Resolve Paper ID",
-    description: "Resolve a paper reference to a canonical paperId for retrieval.",
+    description:
+      "Resolve a paper reference to a canonical paperId and verify whether that paper is indexed in the DB. Use this first unless a trusted paperId is already known.",
     parameters: Type.Object({
       paperName: Type.String(),
       query: Type.String(),
@@ -111,7 +53,8 @@ export default function setup(pi: ExtensionAPI) {
   pi.registerTool({
     name: "query_paper_docs",
     label: "Query Paper Docs",
-    description: "Query grounded snippets for an already-ingested paperId.",
+    description:
+      "Retrieve grounded snippets for an already-indexed paperId. If results are not sufficient, optionally retry with a better query by rephrasing the question or using useful clues from retrieved snippets.",
     parameters: Type.Object({
       paperId: Type.String(),
       query: Type.String(),
