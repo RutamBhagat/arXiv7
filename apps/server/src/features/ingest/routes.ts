@@ -15,6 +15,43 @@ import {
   buildSectionEmbeddingText,
 } from "./source-ingest";
 
+function buildPandocError(stderrText: string) {
+  // Parse pandoc's "(line X, column Y)" shape so we can print local tex context.
+  const lineMatch = stderrText.match(/\(line\s+(\d+),\s+column\s+(\d+)\)/);
+  if (!lineMatch) return { message: stderrText.trim(), line: null as number | null };
+  const line = Number.parseInt(lineMatch[1] ?? "", 10);
+  return { message: stderrText.trim(), line: Number.isNaN(line) ? null : line };
+}
+
+async function logTexContextAroundLine(filePath: string, line: number, radius = 20) {
+  // Log nearby lines to make parse errors actionable without opening the file manually.
+  const contents = await Bun.file(filePath).text();
+  const lines = contents.split("\n");
+  const start = Math.max(1, line - radius);
+  const end = Math.min(lines.length, line + radius);
+  const context: string[] = [];
+  for (let i = start; i <= end; i += 1) {
+    const raw = lines[i - 1] ?? "";
+    context.push(`${i.toString().padStart(6, " ")} | ${raw}`);
+  }
+  console.error(context.join("\n"));
+}
+
+function normalizeExpandedTexForPandoc(tex: string) {
+  const toggleNames = Array.from(
+    tex.matchAll(/\\(?:if|not)toggle\{([^{}]+)\}/g),
+    (match) => match[1]?.trim() ?? "",
+  ).filter(Boolean);
+  if (toggleNames.length === 0) return tex;
+
+  const uniqueToggleNames = Array.from(new Set(toggleNames));
+  const togglePreamble = uniqueToggleNames
+    .map((name) => `\\newtoggle{${name}}\n\\togglefalse{${name}}`)
+    .join("\n");
+
+  return `${togglePreamble}\n${tex}`;
+}
+
 export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
   .post(
     "/resolve_ingest_target",
@@ -95,7 +132,7 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
         });
 
       const workspace = `.ingest/${arxivId.replaceAll("/", "_")}`;
-      const rawArchiveDir = "apps/server/.ingest/raw/zip";
+      const rawArchiveDir = path.resolve(import.meta.dir, "../../..", ".ingest/raw/zip");
       const sourceArchive = `${workspace}/source.tar.gz`;
       const sourceDir = `${workspace}/src`;
       const expandedTex = `${workspace}/expanded.tex`;
@@ -103,6 +140,7 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
       const sectionsDir = `${workspace}/sections`;
 
       try {
+        console.log(`[ingest] ${paperId} start`);
         const sourceArchiveNamePrefix = `arXiv-${arxivId}v`;
         // Look for pre-downloaded source archives for this arXiv id.
         const sourceArchiveCandidates = (() => {
@@ -118,50 +156,79 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
 
         await $`mkdir -p ${workspace} ${sourceDir}`;
         if (selectedSourceArchiveName) {
+          console.log(`[ingest] ${paperId} using local source archive: ${selectedSourceArchiveName}`);
           // Use the newest local archive version when available.
           await $`cp ${path.join(rawArchiveDir, selectedSourceArchiveName)} ${sourceArchive}`;
         } else {
-          // Fallback to arXiv download only when local archive is missing.
-          const fetchTimeoutMs = 30_000;
-          const sourceController = new AbortController();
-          // Abort slow fetches so ingest fails fast with a clear timeout error.
-          const timeoutId = setTimeout(() => sourceController.abort("fetch_timeout"), fetchTimeoutMs);
-          try {
-            const sourceResponse = await fetch(sourceUrl, { signal: sourceController.signal });
-            // Surface rate-limit failures explicitly for callers.
-            if (sourceResponse.status === 429) throw new Error(`Rate limited by arXiv (429) while fetching ${sourceUrl}`);
-            // Fail on any non-success response before writing archive bytes.
-            if (!sourceResponse.ok) throw new Error(`Failed to fetch source archive (${sourceResponse.status}) from ${sourceUrl}`);
-            await Bun.write(sourceArchive, sourceResponse);
-          } catch (error) {
-            // Normalize abort/timeout errors into a clear timeout message.
-            if (error instanceof Error && (error.name === "AbortError" || error.message.includes("fetch_timeout"))) {
-              throw new Error(`Timed out after ${fetchTimeoutMs}ms while fetching ${sourceUrl}`);
-            }
-            throw error;
-          } finally {
-            clearTimeout(timeoutId);
-          }
+          throw new Error(
+            `missing_local_source_archive: expected arXiv-${arxivId}v*.tar.gz in ${rawArchiveDir}`,
+          );
         }
 
         await $`tar -xzf ${sourceArchive} -C ${sourceDir}`;
+        console.log(`[ingest] ${paperId} extracted source archive`);
 
         // flatten included tex files so pandoc sees one complete latex document
         const mainTex = await findMainTexFile(sourceDir);
-        const expanded = await $`latexpand ${path.basename(mainTex)}`
-          .cwd(path.dirname(mainTex))
-          .text();
-        await Bun.write(expandedTex, expanded);
+        console.log(`[ingest] ${paperId} main tex: ${mainTex}`);
+        const latexpandBin = Bun.which("latexpand");
+        if (!latexpandBin) throw new Error("missing_required_tool_at_runtime: latexpand");
+        const latexpandProc = Bun.spawn([latexpandBin, path.basename(mainTex)], {
+          cwd: path.dirname(mainTex),
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const latexpandStderr = await new Response(latexpandProc.stderr).text();
+        const latexpandStdout = await new Response(latexpandProc.stdout).text();
+        const latexpandExitCode = await latexpandProc.exited;
+        if (latexpandExitCode !== 0) {
+          throw new Error(
+            `latexpand failed with exit code ${latexpandExitCode}: ${latexpandStderr.trim()}`,
+          );
+        }
+        const normalizedExpandedTex = normalizeExpandedTexForPandoc(latexpandStdout);
+        await Bun.write(expandedTex, normalizedExpandedTex);
+        console.log(`[ingest] ${paperId} wrote expanded tex`);
 
         // convert latex into markdown while preserving math but dropping raw html passthrough
-        await $`pandoc ${expandedTex} -f latex -t markdown-raw_html-raw_attribute+tex_math_dollars --wrap=none -o ${paperMarkdown}`;
+        const pandocBin = Bun.which("pandoc");
+        if (!pandocBin) throw new Error("missing_required_tool_at_runtime: pandoc");
+        const pandocProc = Bun.spawn(
+          [
+            pandocBin,
+            // Cap pandoc heap to prevent pathological latex inputs from exhausting host memory.
+            "+RTS",
+            "-M1024m",
+            "-RTS",
+            expandedTex,
+            "-f",
+            "latex",
+            "-t",
+            "markdown-raw_html-raw_attribute+tex_math_dollars",
+            "--wrap=none",
+            "-o",
+            paperMarkdown,
+          ],
+          { stderr: "pipe" },
+        );
+        const pandocStderr = await new Response(pandocProc.stderr).text();
+        const pandocExitCode = await pandocProc.exited;
+        if (pandocExitCode !== 0) {
+          const parsed = buildPandocError(pandocStderr);
+          // Print source neighborhood around the reported line to debug parse failures quickly.
+          if (parsed.line !== null) await logTexContextAroundLine(expandedTex, parsed.line);
+          throw new Error(`pandoc failed with exit code ${pandocExitCode}: ${parsed.message}`);
+        }
+        console.log(`[ingest] ${paperId} wrote markdown`);
 
         // store one retrieval document per markdown heading section
         const markdown = await Bun.file(paperMarkdown).text();
         const sections = splitMarkdown(markdown);
+        console.log(`[ingest] ${paperId} split markdown into ${sections.length} sections`);
 
         // keep generated section files inspectable before committing rows
         await writeSectionFiles({ ...body, arxivId, paperId, sourceUrl }, sections, sectionsDir);
+        console.log(`[ingest] ${paperId} wrote section files`);
 
         // metadata embedding helps resolve this paper namespace later
         const metadataText = [
@@ -170,12 +237,18 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
           `Summary: ${body.summary}`,
         ].join("\n");
         const metadataEmbedding = await embed(metadataText);
+        console.log(`[ingest] ${paperId} embedded metadata`);
         const sectionEmbeddings: number[][] = [];
+        const totalSections = sections.length;
         for (const section of sections) {
+          console.log(
+            `[ingest] ${paperId} embedding section ${section.docIndex + 1}/${totalSections}: ${section.sourceFile}`,
+          );
           const sectionEmbeddingInput = buildSectionEmbeddingText(body.title, section.markdown);
           const sectionEmbedding = await embed(sectionEmbeddingInput);
           sectionEmbeddings.push(sectionEmbedding);
         }
+        console.log(`[ingest] ${paperId} embedded all sections`);
         const completedAt = new Date();
 
         await db.transaction(async (tx) => {
@@ -237,6 +310,7 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
             .set({ status: "completed", error: null, completedAt })
             .where(eq(ingestionJobs.id, paperId));
         });
+        console.log(`[ingest] ${paperId} committed to database`);
 
         // only delete the per-paper workspace after the database commit succeeds
         // await $`rm -rf ${workspace}`; // currently commented out to actually see the result
@@ -250,6 +324,7 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : "Paper source ingestion failed.";
+        console.error(`[ingest] ${paperId} failed: ${message}`);
         await db
           .update(ingestionJobs)
           .set({ status: "failed", error: message, completedAt: new Date() })
