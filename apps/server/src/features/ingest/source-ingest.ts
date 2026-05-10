@@ -44,10 +44,7 @@ export function buildSectionEmbeddingText(title: string, markdown: string) {
     if ("raw" in token && typeof token.raw === "string" && token.type === "code")
       chunks.push(token.raw);
   }
-  const plainText = chunks
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const plainText = chunks.join(" ").replace(/\s+/g, " ").trim();
   return `title: ${title} | text: ${plainText}`;
 }
 

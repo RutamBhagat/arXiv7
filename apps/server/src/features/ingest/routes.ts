@@ -38,18 +38,35 @@ async function logTexContextAroundLine(filePath: string, line: number, radius = 
 }
 
 function normalizeExpandedTexForPandoc(tex: string) {
+  const resolvedToggleTex = tex
+    .replace(/\\iftoggle\{[^{}]+\}\{([^{}]*)\}\{([^{}]*)\}/g, "$1")
+    .replace(/\\iftoggle\{[^{}]+\}\{([^{}]*)\}/g, "$1");
+
+  const sanitizedTex = resolvedToggleTex
+    .replaceAll("\0", "")
+    .replace(/^\s*\(\)\s*$/gm, "")
+    .replace(/\\begin\{figure\*?\}[\s\S]*?\\end\{figure\*?\}/g, "")
+    .replace(/\\begin\{table\*?\}[\s\S]*?\\end\{table\*?\}/g, "")
+    .replace(/\\begin\{tikzpicture\}[\s\S]*?\\end\{tikzpicture\}/g, "")
+    .replace(/\\begin\{(?:lstlisting|minted)\}[\s\S]*?\\end\{(?:lstlisting|minted)\}/g, "")
+    .replace(/^\s*\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}\s*$/gm, "")
+    .replace(/^\s*\\end\{figure\*?\}\s*$/gm, "")
+    .replace(/^\s*\\end\{table\*?\}\s*$/gm, "")
+    .replace(/^\s*\\end\{tikzpicture\}\s*$/gm, "")
+    .replace(/^\s*\\end\{(?:lstlisting|minted)\}\s*$/gm, "");
+
   const toggleNames = Array.from(
-    tex.matchAll(/\\(?:if|not)toggle\{([^{}]+)\}/g),
+    sanitizedTex.matchAll(/\\(?:if|not)toggle\{([^{}]+)\}/g),
     (match) => match[1]?.trim() ?? "",
   ).filter(Boolean);
-  if (toggleNames.length === 0) return tex;
+  if (toggleNames.length === 0) return sanitizedTex;
 
   const uniqueToggleNames = Array.from(new Set(toggleNames));
   const togglePreamble = uniqueToggleNames
     .map((name) => `\\newtoggle{${name}}\n\\togglefalse{${name}}`)
     .join("\n");
 
-  return `${togglePreamble}\n${tex}`;
+  return `${togglePreamble}\n${sanitizedTex}`;
 }
 
 export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
@@ -146,17 +163,22 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
         const sourceArchiveCandidates = (() => {
           try {
             return readdirSync(rawArchiveDir)
-              .filter((name) => name.startsWith(sourceArchiveNamePrefix) && name.endsWith(".tar.gz"))
+              .filter(
+                (name) => name.startsWith(sourceArchiveNamePrefix) && name.endsWith(".tar.gz"),
+              )
               .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
           } catch {
             return [];
           }
         })();
-        const selectedSourceArchiveName = sourceArchiveCandidates[sourceArchiveCandidates.length - 1];
+        const selectedSourceArchiveName =
+          sourceArchiveCandidates[sourceArchiveCandidates.length - 1];
 
         await $`mkdir -p ${workspace} ${sourceDir}`;
         if (selectedSourceArchiveName) {
-          console.log(`[ingest] ${paperId} using local source archive: ${selectedSourceArchiveName}`);
+          console.log(
+            `[ingest] ${paperId} using local source archive: ${selectedSourceArchiveName}`,
+          );
           // Use the newest local archive version when available.
           await $`cp ${path.join(rawArchiveDir, selectedSourceArchiveName)} ${sourceArchive}`;
         } else {
@@ -202,7 +224,7 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
             "-RTS",
             expandedTex,
             "-f",
-            "latex",
+            "latex-latex_macros",
             "-t",
             "markdown-raw_html-raw_attribute+tex_math_dollars",
             "--wrap=none",
@@ -325,6 +347,14 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
       } catch (error) {
         const message = error instanceof Error ? error.message : "Paper source ingestion failed.";
         console.error(`[ingest] ${paperId} failed: ${message}`);
+        try {
+          await $`rm -rf ${workspace}`;
+          console.log(`[ingest] ${paperId} cleaned failed workspace`);
+        } catch (cleanupError) {
+          const cleanupMessage =
+            cleanupError instanceof Error ? cleanupError.message : "unknown cleanup error";
+          console.error(`[ingest] ${paperId} workspace cleanup failed: ${cleanupMessage}`);
+        }
         await db
           .update(ingestionJobs)
           .set({ status: "failed", error: message, completedAt: new Date() })
