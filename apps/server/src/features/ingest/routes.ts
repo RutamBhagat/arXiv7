@@ -304,24 +304,15 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
               .values({
                 id: `${paperId}#${section.docIndex.toString().padStart(3, "0")}`,
                 paperId,
-                docIndex: section.docIndex,
                 sectionTitle: section.sectionTitle,
-                sectionPath: section.sectionPath,
-                sectionLevel: section.sectionLevel,
-                sectionKind: section.sectionKind,
                 markdown: section.markdown,
-                sourceFile: section.sourceFile,
                 embedding: sectionEmbeddings[section.docIndex],
               })
               .onConflictDoUpdate({
                 target: paperDocs.id,
                 set: {
                   sectionTitle: section.sectionTitle,
-                  sectionPath: section.sectionPath,
-                  sectionLevel: section.sectionLevel,
-                  sectionKind: section.sectionKind,
                   markdown: section.markdown,
-                  sourceFile: section.sourceFile,
                   embedding: sectionEmbeddings[section.docIndex],
                 },
               });

@@ -60,7 +60,7 @@ export const retrievalRoutes = new Elysia({ prefix: "/api/retrieval" })
           section: paperDocs.sectionTitle,
           text: paperDocs.markdown,
           score: sql<number>`1 - (${cosineDistance(paperDocs.embedding, queryEmbedding)})`,
-          locationHint: paperDocs.sourceFile,
+          locationHint: paperDocs.id,
         })
         .from(paperDocs)
         .where(and(eq(paperDocs.paperId, body.paperId), isNotNull(paperDocs.embedding)))
@@ -68,6 +68,55 @@ export const retrievalRoutes = new Elysia({ prefix: "/api/retrieval" })
         .limit(3);
 
       return { ok: true, result: rows };
+    },
+    {
+      body: t.Object({
+        paperId: t.String(),
+        query: t.String(),
+      }),
+    },
+  )
+  .post(
+    "/query_paper_docs_hybrid",
+    async ({ body }) => {
+      const queryEmbedding = await embed(body.query);
+
+      const semanticRows = await db
+        .select({
+          chunkId: paperDocs.id,
+          section: paperDocs.sectionTitle,
+          text: paperDocs.markdown,
+          semanticScore: sql<number>`1 - (${cosineDistance(paperDocs.embedding, queryEmbedding)})`,
+          lexicalScore: sql<number>`0`,
+        })
+        .from(paperDocs)
+        .where(and(eq(paperDocs.paperId, body.paperId), isNotNull(paperDocs.embedding)))
+        .orderBy((table) => desc(table.semanticScore))
+        .limit(5);
+
+      const lexicalRows = await db
+        .select({
+          chunkId: paperDocs.id,
+          section: paperDocs.sectionTitle,
+          text: paperDocs.markdown,
+          semanticScore: sql<number>`0`,
+          lexicalScore: sql<number>`ts_rank_cd(${paperDocs.searchText}, websearch_to_tsquery('english', ${body.query}))`,
+        })
+        .from(paperDocs)
+        .where(
+          and(
+            eq(paperDocs.paperId, body.paperId),
+            sql`${paperDocs.searchText} @@ websearch_to_tsquery('english', ${body.query})`,
+          ),
+        )
+        .orderBy((table) => desc(table.lexicalScore))
+        .limit(5);
+
+      const merged = [...semanticRows, ...lexicalRows];
+      const byChunk = new Map<string, (typeof merged)[number]>();
+      for (const row of merged) if (!byChunk.has(row.chunkId)) byChunk.set(row.chunkId, row);
+
+      return { ok: true, result: Array.from(byChunk.values()).slice(0, 5) };
     },
     {
       body: t.Object({

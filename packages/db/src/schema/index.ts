@@ -1,15 +1,5 @@
 import { sql, type SQL } from "drizzle-orm";
-import {
-  customType,
-  index,
-  integer,
-  jsonb,
-  pgTable,
-  text,
-  timestamp,
-  uniqueIndex,
-  vector,
-} from "drizzle-orm/pg-core";
+import { customType, index, jsonb, pgTable, text, timestamp, vector } from "drizzle-orm/pg-core";
 
 export const embeddingDimensions = 3072;
 
@@ -40,15 +30,8 @@ export const paperDocs = pgTable(
     paperId: text("paper_id")
       .notNull()
       .references(() => papers.id, { onDelete: "cascade" }),
-    docIndex: integer("doc_index").notNull(),
     sectionTitle: text("section_title").notNull(),
-    sectionPath: jsonb("section_path").$type<string[]>().notNull(),
-    sectionLevel: integer("section_level").notNull(),
-    sectionKind: text("section_kind", {
-      enum: ["main", "abstract", "references", "appendix"],
-    }).notNull(),
     markdown: text("markdown").notNull(),
-    sourceFile: text("source_file").notNull(),
     // used inside a resolved paper namespace for semantic section search
     embedding: vector("embedding", { dimensions: embeddingDimensions }),
     // generated lexical index for exact terms, symbols, acronyms, and citations
@@ -57,13 +40,7 @@ export const paperDocs = pgTable(
         sql`to_tsvector('english', coalesce(${paperDocs.sectionTitle}, '') || ' ' || coalesce(${paperDocs.markdown}, ''))`,
     ),
   },
-  (table) => [
-    uniqueIndex("paper_docs_paper_doc_index_unique").on(table.paperId, table.docIndex),
-    uniqueIndex("paper_docs_paper_source_file_unique").on(table.paperId, table.sourceFile),
-    index("paper_docs_paper_order_idx").on(table.paperId, table.docIndex),
-    index("paper_docs_paper_kind_idx").on(table.paperId, table.sectionKind),
-    index("paper_docs_search_idx").using("gin", table.searchText),
-  ],
+  (table) => [index("paper_docs_search_idx").using("gin", table.searchText)],
 );
 
 export const ingestionJobs = pgTable("ingestion_jobs", {
