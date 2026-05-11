@@ -16,10 +16,13 @@ type QueryPaperDocsHybridInput = {
 
 const DEFAULT_PAPER_RAG_BASE_URL = "http://localhost:3000";
 
-async function callBackend<T>(path: string, body: unknown): Promise<T> {
+async function callBackend(path: string, body: unknown): Promise<string> {
   const response = await fetch(`${DEFAULT_PAPER_RAG_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      accept: "text/markdown, text/plain;q=0.9",
+      "content-type": "application/json",
+    },
     body: JSON.stringify(body),
   });
 
@@ -28,7 +31,7 @@ async function callBackend<T>(path: string, body: unknown): Promise<T> {
     throw new Error(`Backend error ${response.status}: ${errorText}`);
   }
 
-  return (await response.json()) as T;
+  return response.text();
 }
 
 function weakText(value: unknown, min = 12): boolean {
@@ -52,15 +55,15 @@ export default function setup(pi: ExtensionAPI) {
     }),
     //@ts-ignore
     async execute(_toolCallId, params: ResolvePaperIdInput) {
-      const result = await callBackend<unknown>("/api/retrieval/resolve_paper_id", params);
+      const text = await callBackend("/api/retrieval/resolve_paper_id", params);
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        content: [{ type: "text", text }],
         details: {},
       };
     },
   });
 
-    pi.registerTool({
+  pi.registerTool({
     name: "query_paper_docs",
     label: "Query Paper Docs",
     description:
@@ -77,9 +80,9 @@ export default function setup(pi: ExtensionAPI) {
     }),
     //@ts-ignore
     async execute(_toolCallId, params: QueryPaperDocsHybridInput) {
-      const result = await callBackend<unknown>("/api/retrieval/query_paper_docs", params);
+      const text = await callBackend("/api/retrieval/query_paper_docs", params);
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        content: [{ type: "text", text }],
         details: {},
       };
     },
