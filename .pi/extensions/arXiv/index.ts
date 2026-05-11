@@ -61,8 +61,8 @@ export default function setup(pi: ExtensionAPI) {
   });
 
     pi.registerTool({
-    name: "query_paper_docs_hybrid",
-    label: "Query Paper Docs Hybrid",
+    name: "query_paper_docs",
+    label: "Query Paper Docs",
     description:
       "Retrieve grounded snippets using semantic query + lexical query. Only use lexicalQuery for exact strings like quotes, symbols, citation keys, formula tokens, or section labels.",
     promptSnippet: "Query indexed paper documents for grounded snippets after a paperId is known.",
@@ -77,7 +77,7 @@ export default function setup(pi: ExtensionAPI) {
     }),
     //@ts-ignore
     async execute(_toolCallId, params: QueryPaperDocsHybridInput) {
-      const result = await callBackend<unknown>("/api/retrieval/query_paper_docs_hybrid", params);
+      const result = await callBackend<unknown>("/api/retrieval/query_paper_docs", params);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         details: {},

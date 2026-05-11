@@ -42,7 +42,7 @@ export const retrievalRoutes = new Elysia({ prefix: "/api/retrieval" })
     },
   )
   .post(
-    "/query_paper_docs_hybrid",
+    "/query_paper_docs",
     async ({ body }) => {
       const queryEmbedding = await embed(body.query);
 
