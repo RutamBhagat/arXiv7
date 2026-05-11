@@ -32,6 +32,7 @@ export const retrievalRoutes = new Elysia({ prefix: "/api/retrieval" })
       return {
         ok: true,
         result: rows,
+        args: body
       };
     },
     {
@@ -61,7 +62,7 @@ export const retrievalRoutes = new Elysia({ prefix: "/api/retrieval" })
         .orderBy((table) => desc(table.hybridScore))
         .limit(3);
 
-      return { ok: true, result: rows };
+      return { ok: true, result: rows, args: body };
     },
     {
       body: t.Object({
