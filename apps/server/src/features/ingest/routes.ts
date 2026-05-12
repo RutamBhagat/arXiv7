@@ -13,61 +13,8 @@ import {
   writeSectionFiles,
   embed,
   buildSectionEmbeddingText,
+  normalizeExpandedTexForPandoc,
 } from "./source-ingest";
-
-function buildPandocError(stderrText: string) {
-  // Parse pandoc's "(line X, column Y)" shape so we can print local tex context.
-  const lineMatch = stderrText.match(/\(line\s+(\d+),\s+column\s+(\d+)\)/);
-  if (!lineMatch) return { message: stderrText.trim(), line: null as number | null };
-  const line = Number.parseInt(lineMatch[1] ?? "", 10);
-  return { message: stderrText.trim(), line: Number.isNaN(line) ? null : line };
-}
-
-async function logTexContextAroundLine(filePath: string, line: number, radius = 20) {
-  // Log nearby lines to make parse errors actionable without opening the file manually.
-  const contents = await Bun.file(filePath).text();
-  const lines = contents.split("\n");
-  const start = Math.max(1, line - radius);
-  const end = Math.min(lines.length, line + radius);
-  const context: string[] = [];
-  for (let i = start; i <= end; i += 1) {
-    const raw = lines[i - 1] ?? "";
-    context.push(`${i.toString().padStart(6, " ")} | ${raw}`);
-  }
-  console.error(context.join("\n"));
-}
-
-function normalizeExpandedTexForPandoc(tex: string) {
-  const resolvedToggleTex = tex
-    .replace(/\\iftoggle\{[^{}]+\}\{([^{}]*)\}\{([^{}]*)\}/g, "$1")
-    .replace(/\\iftoggle\{[^{}]+\}\{([^{}]*)\}/g, "$1");
-
-  const sanitizedTex = resolvedToggleTex
-    .replaceAll("\0", "")
-    .replace(/^\s*\(\)\s*$/gm, "")
-    .replace(/\\begin\{figure\*?\}[\s\S]*?\\end\{figure\*?\}/g, "")
-    .replace(/\\begin\{table\*?\}[\s\S]*?\\end\{table\*?\}/g, "")
-    .replace(/\\begin\{tikzpicture\}[\s\S]*?\\end\{tikzpicture\}/g, "")
-    .replace(/\\begin\{(?:lstlisting|minted)\}[\s\S]*?\\end\{(?:lstlisting|minted)\}/g, "")
-    .replace(/^\s*\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}\s*$/gm, "")
-    .replace(/^\s*\\end\{figure\*?\}\s*$/gm, "")
-    .replace(/^\s*\\end\{table\*?\}\s*$/gm, "")
-    .replace(/^\s*\\end\{tikzpicture\}\s*$/gm, "")
-    .replace(/^\s*\\end\{(?:lstlisting|minted)\}\s*$/gm, "");
-
-  const toggleNames = Array.from(
-    sanitizedTex.matchAll(/\\(?:if|not)toggle\{([^{}]+)\}/g),
-    (match) => match[1]?.trim() ?? "",
-  ).filter(Boolean);
-  if (toggleNames.length === 0) return sanitizedTex;
-
-  const uniqueToggleNames = Array.from(new Set(toggleNames));
-  const togglePreamble = uniqueToggleNames
-    .map((name) => `\\newtoggle{${name}}\n\\togglefalse{${name}}`)
-    .join("\n");
-
-  return `${togglePreamble}\n${sanitizedTex}`;
-}
 
 export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
   .post(
@@ -159,7 +106,7 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
       try {
         console.log(`[ingest] ${paperId} start`);
         const sourceArchiveNamePrefix = `arXiv-${arxivId}v`;
-        // Look for pre-downloaded source archives for this arXiv id.
+        // look for pre downloaded source archives for this arxiv id
         const sourceArchiveCandidates = (() => {
           try {
             return readdirSync(rawArchiveDir)
@@ -179,7 +126,7 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
           console.log(
             `[ingest] ${paperId} using local source archive: ${selectedSourceArchiveName}`,
           );
-          // Use the newest local archive version when available.
+          // use the newest local archive version when available
           await $`cp ${path.join(rawArchiveDir, selectedSourceArchiveName)} ${sourceArchive}`;
         } else {
           throw new Error(
@@ -218,7 +165,7 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
         const pandocProc = Bun.spawn(
           [
             pandocBin,
-            // Cap pandoc heap to prevent pathological latex inputs from exhausting host memory.
+            // cap pandoc heap to prevent latex inputs from exhausting memory
             "+RTS",
             "-M1024m",
             "-RTS",
@@ -236,10 +183,7 @@ export const ingestRoutes = new Elysia({ prefix: "/api/ingest" })
         const pandocStderr = await new Response(pandocProc.stderr).text();
         const pandocExitCode = await pandocProc.exited;
         if (pandocExitCode !== 0) {
-          const parsed = buildPandocError(pandocStderr);
-          // Print source neighborhood around the reported line to debug parse failures quickly.
-          if (parsed.line !== null) await logTexContextAroundLine(expandedTex, parsed.line);
-          throw new Error(`pandoc failed with exit code ${pandocExitCode}: ${parsed.message}`);
+          throw new Error(`pandoc failed ${pandocStderr}`);
         }
         console.log(`[ingest] ${paperId} wrote markdown`);
 

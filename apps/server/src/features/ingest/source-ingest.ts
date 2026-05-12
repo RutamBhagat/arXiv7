@@ -35,19 +35,6 @@ const minSectionBodyCharacters = 120;
 const maxSectionSlugLength = 96;
 const maxSectionCharacters = 10000;
 
-export function buildSectionEmbeddingText(title: string, markdown: string) {
-  const tokens = marked.lexer(markdown, { gfm: true });
-  const chunks: string[] = [];
-  for (const token of tokens) {
-    if (token.type === "table") continue;
-    if ("text" in token && typeof token.text === "string") chunks.push(token.text);
-    if ("raw" in token && typeof token.raw === "string" && token.type === "code")
-      chunks.push(token.raw);
-  }
-  const plainText = chunks.join(" ").replace(/\s+/g, " ").trim();
-  return `title: ${title} | text: ${plainText}`;
-}
-
 export async function ensureIngestTools() {
   const missing: string[] = [];
 
@@ -95,6 +82,60 @@ export async function findMainTexFile(sourceDir: string) {
   return documentFiles.sort((left, right) => right.size - left.size)[0]!.file;
 }
 
+export function buildSectionEmbeddingText(title: string, markdown: string) {
+  const tokens = marked.lexer(markdown, { gfm: true });
+  const chunks: string[] = [];
+  for (const token of tokens) {
+    if (token.type === "table") continue;
+    if ("text" in token && typeof token.text === "string") chunks.push(token.text);
+    if ("raw" in token && typeof token.raw === "string" && token.type === "code")
+      chunks.push(token.raw);
+  }
+  const plainText = chunks.join(" ").replace(/\s+/g, " ").trim();
+  return `title: ${title} | text: ${plainText}`;
+}
+
+// required because the generaed markdown will still contain latex commands that pandoc can't parse
+export function normalizeExpandedTexForPandoc(tex: string) {
+  const resolvedToggleTex = tex
+    .replace(/\\iftoggle\{[^{}]+\}\{([^{}]*)\}\{([^{}]*)\}/g, "$1")
+    .replace(/\\iftoggle\{[^{}]+\}\{([^{}]*)\}/g, "$1");
+
+  const sanitizedTex = resolvedToggleTex
+    .replaceAll("\0", "")
+    .replace(/^\s*\(\)\s*$/gm, "")
+    .replace(/\\begin\{figure\*?\}[\s\S]*?\\end\{figure\*?\}/g, "")
+    .replace(/\\begin\{table\*?\}[\s\S]*?\\end\{table\*?\}/g, "")
+    .replace(/\\begin\{tikzpicture\}[\s\S]*?\\end\{tikzpicture\}/g, "")
+    .replace(/\\begin\{(?:lstlisting|minted)\}[\s\S]*?\\end\{(?:lstlisting|minted)\}/g, "")
+    .replace(/^\s*\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}\s*$/gm, "")
+    .replace(/^\s*\\end\{figure\*?\}\s*$/gm, "")
+    .replace(/^\s*\\end\{table\*?\}\s*$/gm, "")
+    .replace(/^\s*\\end\{tikzpicture\}\s*$/gm, "")
+    .replace(/^\s*\\end\{(?:lstlisting|minted)\}\s*$/gm, "");
+
+  const toggleNames = Array.from(
+    sanitizedTex.matchAll(/\\(?:if|not)toggle\{([^{}]+)\}/g),
+    (match) => match[1]?.trim() ?? "",
+  ).filter(Boolean);
+  if (toggleNames.length === 0) return sanitizedTex;
+
+  const uniqueToggleNames = Array.from(new Set(toggleNames));
+  const togglePreamble = uniqueToggleNames
+    .map((name) => `\\newtoggle{${name}}\n\\togglefalse{${name}}`)
+    .join("\n");
+
+  return `${togglePreamble}\n${sanitizedTex}`;
+}
+
+function getSectionKind(title: string): SectionDoc["sectionKind"] {
+  const normalized = title.toLowerCase();
+  if (normalized === "abstract") return "abstract";
+  if (normalized === "references" || normalized === "bibliography") return "references";
+  if (normalized.startsWith("appendix")) return "appendix";
+  return "main";
+}
+
 export function splitMarkdown(markdown: string): SectionDoc[] {
   // marked keeps heading text/depth/raw available without a full ast pipeline
   const tokens = marked.lexer(markdown, { gfm: true });
@@ -118,7 +159,7 @@ export function splitMarkdown(markdown: string): SectionDoc[] {
         ...current,
         docIndex,
         markdown: markdownChunk,
-        // Keep ordering stable while making generated files readable during debugging.
+        // keep ordering stable while making generated files readable during debugging
         sourceFile: `${docIndex.toString().padStart(3, "0")}-${
           slugify(current.sectionTitle.replace(/\{#[^}]+\}/g, ""), {
             lower: true,
@@ -161,6 +202,31 @@ export function splitMarkdown(markdown: string): SectionDoc[] {
 
   // some converted papers have no markdown headings; keep them queryable as abstract
   return [buildSection(0, "Abstract", ["Abstract"], 1, `# Abstract\n\n${markdown.trim()}`)];
+}
+
+function splitOversizedMarkdown(markdown: string, maxChars: number) {
+  if (markdown.length <= maxChars) return [markdown];
+  const paragraphs = markdown.split("\n\n");
+  const chunks: string[] = [];
+  let current = "";
+  for (const paragraph of paragraphs) {
+    const block = current.length === 0 ? paragraph : `\n\n${paragraph}`;
+    if (current.length + block.length <= maxChars) {
+      current += block;
+      continue;
+    }
+    if (current.length > 0) chunks.push(current.trim());
+    if (paragraph.length <= maxChars) {
+      current = paragraph;
+      continue;
+    }
+    for (let i = 0; i < paragraph.length; i += maxChars) {
+      chunks.push(paragraph.slice(i, i + maxChars).trim());
+    }
+    current = "";
+  }
+  if (current.length > 0) chunks.push(current.trim());
+  return chunks.length > 0 ? chunks : [markdown.slice(0, maxChars).trim()];
 }
 
 export async function writeSectionFiles(
@@ -211,31 +277,6 @@ export async function embed(input: string) {
   return embedding;
 }
 
-function splitOversizedMarkdown(markdown: string, maxChars: number) {
-  if (markdown.length <= maxChars) return [markdown];
-  const paragraphs = markdown.split("\n\n");
-  const chunks: string[] = [];
-  let current = "";
-  for (const paragraph of paragraphs) {
-    const block = current.length === 0 ? paragraph : `\n\n${paragraph}`;
-    if (current.length + block.length <= maxChars) {
-      current += block;
-      continue;
-    }
-    if (current.length > 0) chunks.push(current.trim());
-    if (paragraph.length <= maxChars) {
-      current = paragraph;
-      continue;
-    }
-    for (let i = 0; i < paragraph.length; i += maxChars) {
-      chunks.push(paragraph.slice(i, i + maxChars).trim());
-    }
-    current = "";
-  }
-  if (current.length > 0) chunks.push(current.trim());
-  return chunks.length > 0 ? chunks : [markdown.slice(0, maxChars).trim()];
-}
-
 function buildSection(
   docIndex: number,
   title: string,
@@ -260,12 +301,4 @@ function buildSection(
         .replace(/-+$/g, "") || "section"
     }.md`,
   };
-}
-
-function getSectionKind(title: string): SectionDoc["sectionKind"] {
-  const normalized = title.toLowerCase();
-  if (normalized === "abstract") return "abstract";
-  if (normalized === "references" || normalized === "bibliography") return "references";
-  if (normalized.startsWith("appendix")) return "appendix";
-  return "main";
 }

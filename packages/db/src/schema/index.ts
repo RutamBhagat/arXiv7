@@ -1,7 +1,15 @@
 import { sql, type SQL } from "drizzle-orm";
-import { customType, index, jsonb, pgTable, text, timestamp, vector } from "drizzle-orm/pg-core";
+import {
+  customType,
+  index,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  vector,
+} from "drizzle-orm/pg-core";
 
-export const embeddingDimensions = 3072;
+export const embeddingDimensions = 1536;
 
 const tsvector = customType<{ data: string }>({
   dataType() {
@@ -9,19 +17,28 @@ const tsvector = customType<{ data: string }>({
   },
 });
 
-export const papers = pgTable("papers", {
-  id: text("id").primaryKey(),
-  arxivId: text("arxiv_id").notNull().unique(),
-  title: text("title").notNull(),
-  authors: jsonb("authors").$type<string[]>().notNull(),
-  summary: text("summary"),
-  sourceUrl: text("source_url").notNull(),
-  // used only to resolve a paper namespace from title/authors/summary before doc search
-  metadataEmbedding: vector("metadata_embedding", {
-    dimensions: embeddingDimensions,
-  }),
-  ingestedAt: timestamp("ingested_at"),
-});
+export const papers = pgTable(
+  "papers",
+  {
+    id: text("id").primaryKey(),
+    arxivId: text("arxiv_id").notNull().unique(),
+    title: text("title").notNull(),
+    authors: jsonb("authors").$type<string[]>().notNull(),
+    summary: text("summary"),
+    sourceUrl: text("source_url").notNull(),
+    // used only to resolve a paper namespace from title/authors/summary before doc search
+    metadataEmbedding: vector("metadata_embedding", {
+      dimensions: embeddingDimensions,
+    }),
+    ingestedAt: timestamp("ingested_at"),
+  },
+  (table) => [
+    index("papers_metadata_embedding_hnsw_idx").using(
+      "hnsw",
+      table.metadataEmbedding.op("vector_cosine_ops"),
+    ),
+  ],
+);
 
 export const paperDocs = pgTable(
   "paper_docs",
@@ -34,13 +51,27 @@ export const paperDocs = pgTable(
     markdown: text("markdown").notNull(),
     // used inside a resolved paper namespace for semantic section search
     embedding: vector("embedding", { dimensions: embeddingDimensions }),
-    // generated lexical index for exact terms, symbols, acronyms, and citations
+    // english full-text search: good for natural-language terms with stemming
     searchText: tsvector("search_text").generatedAlwaysAs(
       (): SQL =>
         sql`to_tsvector('english', coalesce(${paperDocs.sectionTitle}, '') || ' ' || coalesce(${paperDocs.markdown}, ''))`,
     ),
+    // simple full-text search: better fallback for acronyms, identifiers, and less aggressive normalization
+    searchTextSimple: tsvector("search_text_simple").generatedAlwaysAs(
+      (): SQL =>
+        sql`to_tsvector('simple', coalesce(${paperDocs.sectionTitle}, '') || ' ' || coalesce(${paperDocs.markdown}, ''))`,
+    ),
   },
-  (table) => [index("paper_docs_search_idx").using("gin", table.searchText)],
+  (table) => [
+    index("paper_docs_paper_id_idx").on(table.paperId),
+    // native pgvector HNSW index
+    index("paper_docs_embedding_hnsw_idx").using(
+      "hnsw",
+      table.embedding.op("vector_cosine_ops"),
+    ),
+    index("paper_docs_search_idx").using("gin", table.searchText),
+    index("paper_docs_search_simple_idx").using("gin", table.searchTextSimple),
+  ],
 );
 
 export const ingestionJobs = pgTable("ingestion_jobs", {
