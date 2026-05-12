@@ -5,9 +5,6 @@ export type RetrievedChunk = {
   section: string;
   text: string;
   rrfScore: number;
-  semanticRank?: number;
-  englishLexicalRank?: number;
-  simpleLexicalRank?: number;
   semanticScore?: number;
   englishLexicalScore?: number;
   simpleLexicalScore?: number;
@@ -41,13 +38,10 @@ export function addRrfCandidate(
   const score = row.score == null ? undefined : Number(row.score);
 
   if (source === "semantic") {
-    existing.semanticRank = rank;
     existing.semanticScore = score;
   } else if (source === "englishLexical") {
-    existing.englishLexicalRank = rank;
     existing.englishLexicalScore = score;
   } else {
-    existing.simpleLexicalRank = rank;
     existing.simpleLexicalScore = score;
   }
 
