@@ -23,6 +23,13 @@ export interface ToolInvocationView {
   status: "start" | "end";
 }
 
+export interface ChatUsageView {
+  cost: number;
+  contextWindow: number;
+  contextPercent: number | null;
+  usingSubscription: boolean;
+}
+
 function findAppRoot(): string {
   const candidates = [process.cwd(), appSourceDir];
 
@@ -69,6 +76,18 @@ export class ChatClient {
 
   getReasoningLevel(): ModelThinkingLevel {
     return this.reasoningLevel;
+  }
+
+  getUsage(): ChatUsageView {
+    const stats = this.session.getSessionStats();
+    const contextUsage = stats.contextUsage;
+    const model = this.session.state.model;
+    return {
+      cost: stats.cost,
+      contextWindow: contextUsage?.contextWindow ?? model?.contextWindow ?? 0,
+      contextPercent: contextUsage?.percent ?? null,
+      usingSubscription: model ? this.session.modelRegistry.isUsingOAuth(model) : false,
+    };
   }
 
   getLoadedResources(): { skills: string[]; extensions: string[] } {

@@ -1,4 +1,4 @@
-import { CombinedAutocompleteProvider, Container, Editor, fuzzyFilter, getKeybindings, Input, Loader, Markdown, matchesKey, Text, TUI, type Focusable, type SlashCommand } from "@earendil-works/pi-tui"
+import { CombinedAutocompleteProvider, Container, Editor, fuzzyFilter, getKeybindings, Input, Loader, Markdown, matchesKey, Text, TUI, visibleWidth, type Focusable, type SlashCommand } from "@earendil-works/pi-tui"
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { ToolExecutionComponent, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider, Component } from "@earendil-works/pi-tui";
@@ -19,6 +19,14 @@ const slashCommands: SlashCommand[] = [
   { name: "login", description: "Configure provider authentication" },
   { name: "model", description: "Select model (opens selector UI)" },
 ];
+
+function formatTokens(count: number): string {
+  if (count < 1000) return count.toString();
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1000000) return `${Math.round(count / 1000)}k`;
+  if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
+  return `${Math.round(count / 1000000)}M`;
+}
 
 function colorTheme() {
   return {
@@ -125,18 +133,25 @@ class ModelSelector extends Container implements Focusable {
   }
 }
 
-class RightAlignedText {
-  private text = "";
+class FooterStatus {
+  private leftText = "";
+  private rightText = "";
 
-  setText(text: string): void {
-    this.text = text;
+  setLeftText(text: string): void {
+    this.leftText = text;
+  }
+
+  setRightText(text: string): void {
+    this.rightText = text;
   }
 
   invalidate(): void {}
 
   render(width: number): string[] {
-    const padding = Math.max(0, width - this.text.length - 1);
-    return [`${" ".repeat(padding)}${this.text} `];
+    const leftWidth = visibleWidth(this.leftText);
+    const rightWidth = visibleWidth(this.rightText);
+    const padding = Math.max(1, width - leftWidth - rightWidth);
+    return [`${this.leftText}${" ".repeat(padding)}${this.rightText}`];
   }
 }
 
@@ -144,7 +159,7 @@ export class ChatApp {
   private readonly transcript = new Container();
   private readonly editor: Editor;
   private readonly loader: Loader;
-  private readonly modelStatus: RightAlignedText;
+  private readonly modelStatus: FooterStatus;
   private readonly toolMessages = new Map<string, ToolExecutionComponent>();
   private waiting = false;
 
@@ -159,7 +174,7 @@ export class ChatApp {
     }));
     this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider([...slashCommands, ...skillCommands], process.cwd()));
     this.loader = new Loader(tui, chalk.cyan, chalk.dim, "Thinking...");
-    this.modelStatus = new RightAlignedText();
+    this.modelStatus = new FooterStatus();
   }
 
   start(): void {
@@ -304,7 +319,12 @@ export class ChatApp {
 
   private updateModelStatus(): void {
     const text = `${this.chatClient.getModelId()} • ${this.chatClient.getReasoningLevel()}`;
-    this.modelStatus.setText(chalk.dim(text));
+    const usage = this.chatClient.getUsage();
+    const cost = `$${usage.cost.toFixed(3)}${usage.usingSubscription ? " (sub)" : ""}`;
+    const percent = usage.contextPercent === null ? "?" : `${usage.contextPercent.toFixed(1)}%`;
+    const context = `${percent}/${formatTokens(usage.contextWindow)}`;
+    this.modelStatus.setLeftText(chalk.dim(`${cost} ${context}`));
+    this.modelStatus.setRightText(chalk.dim(text));
   }
 
   private async cycleReasoning(): Promise<void> {
@@ -439,6 +459,7 @@ export class ChatApp {
       this.transcript.removeChild(this.loader);
       this.waiting = false;
       this.editor.disableSubmit = false;
+      this.updateModelStatus();
       this.tui.requestRender();
     }
   }
