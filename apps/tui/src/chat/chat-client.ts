@@ -1,11 +1,28 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getModel, getModels, type AssistantMessage, type KnownProvider, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { createAgentSession, parseSkillBlock, SessionManager, SettingsManager, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import {
+  getModel,
+  type AssistantMessage,
+  type KnownProvider,
+  type Model,
+  type ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
+import {
+  createAgentSession,
+  parseSkillBlock,
+  SessionManager,
+  SettingsManager,
+  type ExtensionUIContext,
+} from "@earendil-works/pi-coding-agent";
 import type { ChatMessageView } from "../shared/types";
 import { createChatAuthStorage } from "../auth/chatgpt-auth";
-import { defaultModelId, defaultProviderId, readChatSettings, writeChatSettings } from "./chat-settings";
+import {
+  defaultProviderId,
+  getDefaultModelId,
+  readChatSettings,
+  writeChatSettings,
+} from "./chat-settings";
 
 const appSourceDir = dirname(fileURLToPath(import.meta.url));
 
@@ -55,7 +72,7 @@ export class ChatClient {
   private readonly authStorage = createChatAuthStorage();
   private session: any;
   private providerId = defaultProviderId;
-  private modelId = defaultModelId;
+  private modelId = getDefaultModelId();
   private reasoningLevel: ModelThinkingLevel = "medium";
 
   async loadSettings(): Promise<void> {
@@ -69,7 +86,10 @@ export class ChatClient {
   getAvailableModels() {
     return this.session.modelRegistry
       .getAvailable()
-      .filter((model: Model<any>) => model.provider === "openai-codex" || model.provider === "google");
+      .filter(
+        (model: Model<any>) => model.provider === "openai-codex" || model.provider === "google",
+      )
+      .toReversed();
   }
 
   hasAvailableModels(): boolean {
@@ -95,7 +115,10 @@ export class ChatClient {
 
   async selectFirstAvailableModel(providerId?: string): Promise<boolean> {
     const models = this.getAvailableModels();
-    const model = providerId ? models.find((model: Model<any>) => model.provider === providerId) : models[0];
+    const providerModels = providerId
+      ? models.filter((model: Model<any>) => model.provider === providerId)
+      : models;
+    const model = providerModels[0];
     if (!model) return false;
     await this.setModel(model.provider, model.id, this.reasoningLevel);
     return true;
@@ -111,7 +134,12 @@ export class ChatClient {
 
   getUsage(): ChatUsageView {
     if (!this.hasAvailableModels()) {
-      return { cost: 0, contextWindow: 0, contextPercent: null, usingSubscription: false };
+      return {
+        cost: 0,
+        contextWindow: 0,
+        contextPercent: null,
+        usingSubscription: false,
+      };
     }
 
     const stats = this.session.getSessionStats();
@@ -127,12 +155,19 @@ export class ChatClient {
 
   getLoadedResources(): { skills: string[]; extensions: string[] } {
     const skills = this.session.resourceLoader.getSkills().skills.map((skill: any) => skill.name);
-    const extensions = this.session.resourceLoader.getExtensions().extensions.map((extension: any) => {
-      if (extension.sourceInfo?.source?.startsWith("npm:")) return extension.sourceInfo.source.slice("npm:".length);
-      const nodeModulesIndex = extension.path.split("/").lastIndexOf("node_modules");
-      if (nodeModulesIndex >= 0) return extension.path.split("/").slice(nodeModulesIndex + 1, nodeModulesIndex + 3).join("/");
-      return dirname(extension.path).split("/").at(-1) ?? extension.path;
-    });
+    const extensions = this.session.resourceLoader
+      .getExtensions()
+      .extensions.map((extension: any) => {
+        if (extension.sourceInfo?.source?.startsWith("npm:"))
+          return extension.sourceInfo.source.slice("npm:".length);
+        const nodeModulesIndex = extension.path.split("/").lastIndexOf("node_modules");
+        if (nodeModulesIndex >= 0)
+          return extension.path
+            .split("/")
+            .slice(nodeModulesIndex + 1, nodeModulesIndex + 3)
+            .join("/");
+        return dirname(extension.path).split("/").at(-1) ?? extension.path;
+      });
     return {
       skills: skills.sort((a: string, b: string) => a.localeCompare(b)),
       extensions: extensions.sort((a: string, b: string) => a.localeCompare(b)),
@@ -154,11 +189,18 @@ export class ChatClient {
     return this.session.resourceLoader.getSkills().skills.find((skill: any) => {
       const name = skill.name.toLowerCase();
       const terms = name.split("-");
-      return normalized.includes(name) || terms.some((term: string) => term.length > 3 && normalized.includes(term));
+      return (
+        normalized.includes(name) ||
+        terms.some((term: string) => term.length > 3 && normalized.includes(term))
+      );
     })?.name;
   }
 
-  async setModel(providerId: string, modelId: string, reasoningLevel: ModelThinkingLevel): Promise<void> {
+  async setModel(
+    providerId: string,
+    modelId: string,
+    reasoningLevel: ModelThinkingLevel,
+  ): Promise<void> {
     this.providerId = providerId;
     this.modelId = modelId;
     this.reasoningLevel = reasoningLevel;
@@ -223,14 +265,29 @@ export class ChatClient {
         onDelta(event.assistantMessageEvent.delta);
       }
       if (event.type === "tool_execution_start") {
-        onToolInvocation({ id: event.toolCallId, name: event.toolName, args: event.args, status: "start" });
+        onToolInvocation({
+          id: event.toolCallId,
+          name: event.toolName,
+          args: event.args,
+          status: "start",
+        });
       }
       if (event.type === "tool_execution_end") {
-        onToolInvocation({ id: event.toolCallId, name: event.toolName, result: event.result, isError: event.isError, status: "end" });
+        onToolInvocation({
+          id: event.toolCallId,
+          name: event.toolName,
+          result: event.result,
+          isError: event.isError,
+          status: "end",
+        });
       }
       if (event.type === "message_end" && event.message.role === "user") {
         const skillBlock = parseSkillBlock(this.getMessageText(event.message));
-        if (skillBlock) onSkillInvocation({ name: skillBlock.name, content: skillBlock.content });
+        if (skillBlock)
+          onSkillInvocation({
+            name: skillBlock.name,
+            content: skillBlock.content,
+          });
       }
       if (event.type === "message_end" && event.message.role === "assistant") {
         assistantMessage = event.message;

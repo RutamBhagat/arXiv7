@@ -1,4 +1,19 @@
-import { CombinedAutocompleteProvider, Container, Editor, fuzzyFilter, getKeybindings, Input, Loader, Markdown, matchesKey, Text, TUI, visibleWidth, type Focusable, type SlashCommand } from "@earendil-works/pi-tui"
+import {
+  CombinedAutocompleteProvider,
+  Container,
+  Editor,
+  fuzzyFilter,
+  getKeybindings,
+  Input,
+  Loader,
+  Markdown,
+  matchesKey,
+  Text,
+  TUI,
+  visibleWidth,
+  type Focusable,
+  type SlashCommand,
+} from "@earendil-works/pi-tui";
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { ToolExecutionComponent, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider, Component } from "@earendil-works/pi-tui";
@@ -71,7 +86,8 @@ class LoginAuthTypeSelector extends Container implements Focusable {
 
   handleInput(data: string): void {
     if (matchesKey(data, "up")) this.selectedIndex = Math.max(0, this.selectedIndex - 1);
-    else if (matchesKey(data, "down")) this.selectedIndex = Math.min(this.options.length - 1, this.selectedIndex + 1);
+    else if (matchesKey(data, "down"))
+      this.selectedIndex = Math.min(this.options.length - 1, this.selectedIndex + 1);
     else if (matchesKey(data, "enter")) this.onSelect(this.options[this.selectedIndex]!.type);
     else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.onCancel();
     this.updateList();
@@ -113,7 +129,8 @@ class LoginProviderSelector extends Container implements Focusable {
 
   handleInput(data: string): void {
     if (matchesKey(data, "up")) this.selectedIndex = Math.max(0, this.selectedIndex - 1);
-    else if (matchesKey(data, "down")) this.selectedIndex = Math.min(this.providers.length - 1, this.selectedIndex + 1);
+    else if (matchesKey(data, "down"))
+      this.selectedIndex = Math.min(this.providers.length - 1, this.selectedIndex + 1);
     else if (matchesKey(data, "enter")) this.onSelect(this.providers[this.selectedIndex]!.id);
     else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.onCancel();
     else this.searchInput.handleInput(data);
@@ -161,7 +178,9 @@ class ModelSelector extends Container implements Focusable {
   ) {
     super();
     this.filteredModels = models;
-    const modelIndex = models.findIndex((model) => model.provider === currentProviderId && model.id === currentModelId);
+    const modelIndex = models.findIndex(
+      (model) => model.provider === currentProviderId && model.id === currentModelId,
+    );
     this.selectedModelIndex = modelIndex >= 0 ? modelIndex : 0;
     this.searchInput.onSubmit = () => this.selectCurrent();
 
@@ -174,9 +193,16 @@ class ModelSelector extends Container implements Focusable {
   private filterModels(): void {
     const query = this.searchInput.getValue();
     this.filteredModels = query
-      ? fuzzyFilter(this.models, query, (model) => `${model.id} ${model.name} ${model.provider}/${model.id}`)
+      ? fuzzyFilter(
+          this.models,
+          query,
+          (model) => `${model.id} ${model.name} ${model.provider}/${model.id}`,
+        )
       : this.models;
-    this.selectedModelIndex = Math.min(this.selectedModelIndex, Math.max(0, this.filteredModels.length - 1));
+    this.selectedModelIndex = Math.min(
+      this.selectedModelIndex,
+      Math.max(0, this.filteredModels.length - 1),
+    );
     this.updateList();
   }
 
@@ -185,7 +211,10 @@ class ModelSelector extends Container implements Focusable {
     const visibleModels = this.filteredModels.slice(0, 10);
     for (const [index, model] of visibleModels.entries()) {
       const selected = index === this.selectedModelIndex;
-      const current = model.provider === this.currentProviderId && model.id === this.currentModelId ? chalk.green(" ✓") : "";
+      const current =
+        model.provider === this.currentProviderId && model.id === this.currentModelId
+          ? chalk.green(" ✓")
+          : "";
       const prefix = selected ? chalk.cyan("> ") : "  ";
       this.list.addChild(new Text(`${prefix}${model.provider}/${model.id}${current}`, 1, 0));
     }
@@ -195,7 +224,11 @@ class ModelSelector extends Container implements Focusable {
 
   handleInput(data: string): void {
     if (matchesKey(data, "up")) this.selectedModelIndex = Math.max(0, this.selectedModelIndex - 1);
-    else if (matchesKey(data, "down")) this.selectedModelIndex = Math.min(this.filteredModels.length - 1, this.selectedModelIndex + 1);
+    else if (matchesKey(data, "down"))
+      this.selectedModelIndex = Math.min(
+        this.filteredModels.length - 1,
+        this.selectedModelIndex + 1,
+      );
     else if (matchesKey(data, "enter")) this.selectCurrent();
     else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.onCancel();
     else {
@@ -251,7 +284,9 @@ export class ChatApp {
       name: `skill:${name}`,
       description: "Invoke loaded skill",
     }));
-    this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider([...slashCommands, ...skillCommands], process.cwd()));
+    this.editor.setAutocompleteProvider(
+      new CombinedAutocompleteProvider([...slashCommands, ...skillCommands], process.cwd()),
+    );
     this.loader = new Loader(tui, chalk.cyan, chalk.dim, "Thinking...");
     this.modelStatus = new FooterStatus();
   }
@@ -281,7 +316,8 @@ export class ChatApp {
     const theme = colorTheme();
     return {
       custom: (factory) => this.showExtensionComponent(factory, theme),
-      notify: (message, type) => type === "error" ? this.addMessage("error", message) : this.showStatus(message),
+      notify: (message, type) =>
+        type === "error" ? this.addMessage("error", message) : this.showStatus(message),
       pasteToEditor: (text) => this.editor.insertTextAtCursor(text),
       setEditorText: (text) => this.editor.setText(text),
       getEditorText: () => this.editor.getText(),
@@ -302,7 +338,9 @@ export class ChatApp {
       setHeader: () => {},
       setTitle: (title) => this.tui.terminal.setTitle(title),
       editor: async () => undefined,
-      addAutocompleteProvider: (_factory: (current: AutocompleteProvider) => AutocompleteProvider) => {},
+      addAutocompleteProvider: (
+        _factory: (current: AutocompleteProvider) => AutocompleteProvider,
+      ) => {},
       setEditorComponent: () => {},
       getEditorComponent: () => undefined,
       getAllThemes: () => [],
@@ -359,22 +397,45 @@ export class ChatApp {
 
   private addLoadedResources(): void {
     const loaded = this.chatClient.getLoadedResources();
-    if (loaded.skills.length > 0) this.tui.addChild(new Text(`${chalk.bold("[Skills]")}\n  ${loaded.skills.join(", ")}`, 1, 0));
-    if (loaded.extensions.length > 0) this.tui.addChild(new Text(`${chalk.bold("[Extensions]")}\n  ${loaded.extensions.join(", ")}`, 1, 0));
+    if (loaded.skills.length > 0)
+      this.tui.addChild(new Text(`${chalk.bold("[Skills]")}\n  ${loaded.skills.join(", ")}`, 1, 0));
+    if (loaded.extensions.length > 0)
+      this.tui.addChild(
+        new Text(`${chalk.bold("[Extensions]")}\n  ${loaded.extensions.join(", ")}`, 1, 0),
+      );
   }
 
   private addSkillInvocation(name: string): void {
     const loaderIndex = this.transcript.children.indexOf(this.loader);
-    const message = new Text(`${chalk.bold("[skill]")} ${chalk.cyan(name)} ${chalk.dim("(expanded)")}`, 1, 1);
+    const message = new Text(
+      `${chalk.bold("[skill]")} ${chalk.cyan(name)} ${chalk.dim("(expanded)")}`,
+      1,
+      1,
+    );
     if (loaderIndex >= 0) this.transcript.children.splice(loaderIndex, 0, message);
     else this.transcript.addChild(message);
     this.tui.requestRender();
   }
 
-  private setToolInvocation(tool: { id: string; name: string; args?: any; result?: any; isError?: boolean; status: "start" | "end" }): void {
+  private setToolInvocation(tool: {
+    id: string;
+    name: string;
+    args?: any;
+    result?: any;
+    isError?: boolean;
+    status: "start" | "end";
+  }): void {
     let message = this.toolMessages.get(tool.id);
     if (!message) {
-      message = new ToolExecutionComponent(tool.name, tool.id, tool.args ?? {}, {}, this.chatClient.getToolDefinition(tool.name), this.tui, process.cwd());
+      message = new ToolExecutionComponent(
+        tool.name,
+        tool.id,
+        tool.args ?? {},
+        {},
+        this.chatClient.getToolDefinition(tool.name),
+        this.tui,
+        process.cwd(),
+      );
       this.toolMessages.set(tool.id, message);
       const loaderIndex = this.transcript.children.indexOf(this.loader);
       if (loaderIndex >= 0) this.transcript.children.splice(loaderIndex, 0, message);
@@ -389,7 +450,12 @@ export class ChatApp {
   }
 
   private addMessage(role: string, content: string): Markdown {
-    const label = role === "user" ? chalk.cyan("You") : role === "error" ? chalk.red("Error") : chalk.green("Assistant");
+    const label =
+      role === "user"
+        ? chalk.cyan("You")
+        : role === "error"
+          ? chalk.red("Error")
+          : chalk.green("Assistant");
     const message = new Markdown(`${label}\n\n${content}`, 1, 1, markdownTheme);
     this.transcript.addChild(message);
     this.tui.requestRender();
@@ -399,7 +465,7 @@ export class ChatApp {
   private updateModelStatus(): void {
     const text = this.chatClient.hasAvailableModels()
       ? `${this.chatClient.getProviderId()}/${this.chatClient.getModelId()} • ${this.chatClient.getReasoningLevel()}`
-      : `No authenticated model • ${this.chatClient.getReasoningLevel()}`;
+      : "No authenticated model";
     const usage = this.chatClient.getUsage();
     const cost = `$${usage.cost.toFixed(3)}${usage.usingSubscription ? " (sub)" : ""}`;
     this.modelStatus.setLeftText(chalk.dim(cost));
@@ -416,7 +482,11 @@ export class ChatApp {
       this.tui.requestRender();
       return;
     }
-    await this.chatClient.setModel(this.chatClient.getProviderId(), this.chatClient.getModelId(), next.level);
+    await this.chatClient.setModel(
+      this.chatClient.getProviderId(),
+      this.chatClient.getModelId(),
+      next.level,
+    );
     this.updateModelStatus();
     this.tui.requestRender();
   }
@@ -443,7 +513,10 @@ export class ChatApp {
         this.tui.requestRender();
         resolve(authType);
       };
-      const selector = new LoginAuthTypeSelector((authType) => done(authType), () => done(undefined));
+      const selector = new LoginAuthTypeSelector(
+        (authType) => done(authType),
+        () => done(undefined),
+      );
       const editorIndex = this.tui.children.indexOf(this.editor);
       this.tui.children.splice(editorIndex, 0, selector);
       this.tui.setFocus(selector);
@@ -453,9 +526,10 @@ export class ChatApp {
 
   private selectLoginProvider(authType: LoginAuthType): Promise<string | undefined> {
     return new Promise((resolve) => {
-      const providers = authType === "subscription"
-        ? [{ id: "openai-codex", label: "ChatGPT Plus/Pro (Codex Subscription)" }]
-        : [{ id: "google", label: "Google Gemini" }];
+      const providers =
+        authType === "subscription"
+          ? [{ id: "openai-codex", label: "ChatGPT Plus/Pro (Codex Subscription)" }]
+          : [{ id: "google", label: "Google Gemini" }];
       const done = (providerId: string | undefined) => {
         this.tui.removeChild(selector);
         this.tui.setFocus(this.editor);
@@ -510,7 +584,11 @@ export class ChatApp {
         this.tui.requestRender();
         resolve(apiKey);
       };
-      const dialog = new ApiKeyLoginDialog(providerName, (apiKey) => done(apiKey), () => done(undefined));
+      const dialog = new ApiKeyLoginDialog(
+        providerName,
+        (apiKey) => done(apiKey),
+        () => done(undefined),
+      );
       const editorIndex = this.tui.children.indexOf(this.editor);
       this.tui.children.splice(editorIndex, 0, dialog);
       this.tui.setFocus(dialog);
@@ -531,11 +609,13 @@ export class ChatApp {
         this.chatClient.getProviderId(),
         this.chatClient.getModelId(),
         (providerId, modelId) => {
-          void this.chatClient.setModel(providerId, modelId, this.chatClient.getReasoningLevel()).then(() => {
-            this.updateModelStatus();
-            this.showStatus(`Model: ${providerId}/${modelId}`);
-            done();
-          });
+          void this.chatClient
+            .setModel(providerId, modelId, this.chatClient.getReasoningLevel())
+            .then(() => {
+              this.updateModelStatus();
+              this.showStatus(`Model: ${providerId}/${modelId}`);
+              done();
+            });
         },
         done,
       );
@@ -629,7 +709,9 @@ export class ChatApp {
 
       assistant.setText(`${chalk.green("Assistant")}\n\n${result.content || responseText}`);
     } catch (error) {
-      assistant.setText(`${chalk.red("Error")}\n\n${error instanceof Error ? error.message : "Unknown error"}`);
+      assistant.setText(
+        `${chalk.red("Error")}\n\n${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     } finally {
       this.transcript.removeChild(this.loader);
       this.waiting = false;
