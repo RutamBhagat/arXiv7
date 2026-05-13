@@ -9,10 +9,7 @@ const terminal = new ProcessTerminal();
 const tui = new TUI(terminal);
 
 let app: ChatApp;
-const chatClient = new ChatClient({
-  onStatus: (message) => app.showStatus(message),
-  onPrompt: (message) => app.prompt(message),
-});
+const chatClient = new ChatClient();
 
 await chatClient.loadSettings();
 app = new ChatApp(tui, chatClient);

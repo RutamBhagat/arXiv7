@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getModel, getModels, type AssistantMessage, type ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { AuthStorage, createAgentSession, parseSkillBlock, SessionManager, SettingsManager, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { getModel, getModels, type AssistantMessage, type KnownProvider, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { createAgentSession, parseSkillBlock, SessionManager, SettingsManager, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { ChatMessageView } from "../shared/types";
-import { getChatGptApiKey, type ChatGptAuthCallbacks } from "../auth/chatgpt-auth";
-import { defaultModelId, readChatSettings, writeChatSettings } from "./chat-settings";
+import { createChatAuthStorage } from "../auth/chatgpt-auth";
+import { defaultModelId, defaultProviderId, readChatSettings, writeChatSettings } from "./chat-settings";
 
 const appSourceDir = dirname(fileURLToPath(import.meta.url));
 
@@ -52,33 +52,68 @@ function findAppRoot(): string {
 export class ChatClient {
   private readonly appRoot = findAppRoot();
   private readonly agentDir = join(this.appRoot, ".pi");
-  private readonly authStorage = AuthStorage.inMemory();
+  private readonly authStorage = createChatAuthStorage();
   private session: any;
+  private providerId = defaultProviderId;
   private modelId = defaultModelId;
   private reasoningLevel: ModelThinkingLevel = "medium";
 
-  constructor(private readonly authCallbacks: ChatGptAuthCallbacks) {}
-
   async loadSettings(): Promise<void> {
     const settings = await readChatSettings();
+    this.providerId = settings.providerId;
     this.modelId = settings.modelId;
     this.reasoningLevel = settings.reasoningLevel;
     await this.getSession();
   }
 
   getAvailableModels() {
-    return getModels("openai-codex");
+    return this.session.modelRegistry
+      .getAvailable()
+      .filter((model: Model<any>) => model.provider === "openai-codex" || model.provider === "google");
+  }
+
+  hasAvailableModels(): boolean {
+    return this.getAvailableModels().length > 0;
   }
 
   getModelId(): string {
     return this.modelId;
   }
 
+  getProviderId(): string {
+    return this.providerId;
+  }
+
+  getProviderAuthStatus(providerId: string) {
+    return this.session.modelRegistry.getProviderAuthStatus(providerId);
+  }
+
+  refreshAuth(): void {
+    this.authStorage.reload();
+    this.session.modelRegistry.refresh();
+  }
+
+  async selectFirstAvailableModel(providerId?: string): Promise<boolean> {
+    const models = this.getAvailableModels();
+    const model = providerId ? models.find((model: Model<any>) => model.provider === providerId) : models[0];
+    if (!model) return false;
+    await this.setModel(model.provider, model.id, this.reasoningLevel);
+    return true;
+  }
+
   getReasoningLevel(): ModelThinkingLevel {
     return this.reasoningLevel;
   }
 
+  private getSelectedModel(): Model<any> {
+    return getModel(this.providerId as KnownProvider, this.modelId as never);
+  }
+
   getUsage(): ChatUsageView {
+    if (!this.hasAvailableModels()) {
+      return { cost: 0, contextWindow: 0, contextPercent: null, usingSubscription: false };
+    }
+
     const stats = this.session.getSessionStats();
     const contextUsage = stats.contextUsage;
     const model = this.session.state.model;
@@ -123,14 +158,15 @@ export class ChatClient {
     })?.name;
   }
 
-  async setModel(modelId: string, reasoningLevel: ModelThinkingLevel): Promise<void> {
+  async setModel(providerId: string, modelId: string, reasoningLevel: ModelThinkingLevel): Promise<void> {
+    this.providerId = providerId;
     this.modelId = modelId;
     this.reasoningLevel = reasoningLevel;
-    await writeChatSettings({ modelId, reasoningLevel });
+    await writeChatSettings({ providerId, modelId, reasoningLevel });
 
     if (this.session) {
       this.session.setThinkingLevel(reasoningLevel);
-      await this.session.setModel(getModel("openai-codex", modelId as never));
+      await this.session.setModel(this.getSelectedModel());
     }
   }
 
@@ -143,7 +179,7 @@ export class ChatClient {
         authStorage: this.authStorage,
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.inMemory(settings),
-        model: getModel("openai-codex", this.modelId as never),
+        model: this.getSelectedModel(),
         thinkingLevel: this.reasoningLevel,
       });
       this.session = result.session;
@@ -173,8 +209,10 @@ export class ChatClient {
     onSkillInvocation: (skill: SkillInvocationView) => void,
     onToolInvocation: (tool: ToolInvocationView) => void,
   ): Promise<ChatMessageView> {
-    const apiKey = await getChatGptApiKey(this.authCallbacks);
-    this.authStorage.setRuntimeApiKey("openai-codex", apiKey);
+    if (!this.hasAvailableModels()) {
+      throw new Error("No authenticated model. Use /login to configure a provider.");
+    }
+
     const session = await this.getSession();
     const requestedSkillName = this.getRequestedSkillName(text);
     const promptText = requestedSkillName ? `/skill:${requestedSkillName} ${text}` : text;

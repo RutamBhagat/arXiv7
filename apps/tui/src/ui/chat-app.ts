@@ -3,7 +3,7 @@ import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { ToolExecutionComponent, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider, Component } from "@earendil-works/pi-tui";
 import type { ChatClient } from "../chat/chat-client";
-import { loginChatGpt, logoutChatGpt } from "../auth/chatgpt-auth";
+import { loginChatGpt, loginProviderApiKey, logoutProvider } from "../auth/chatgpt-auth";
 import { chalk, editorTheme, markdownTheme } from "./theme";
 
 const reasoningOptions: Array<{ level: ModelThinkingLevel; label: string }> = [
@@ -19,14 +19,6 @@ const slashCommands: SlashCommand[] = [
   { name: "login", description: "Configure provider authentication" },
   { name: "model", description: "Select model (opens selector UI)" },
 ];
-
-function formatTokens(count: number): string {
-  if (count < 1000) return count.toString();
-  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-  if (count < 1000000) return `${Math.round(count / 1000)}k`;
-  if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-  return `${Math.round(count / 1000000)}M`;
-}
 
 function colorTheme() {
   return {
@@ -47,22 +39,108 @@ function colorTheme() {
   };
 }
 
-class LoginProviderSelector extends Container implements Focusable {
+type LoginAuthType = "subscription" | "api_key";
+
+class LoginAuthTypeSelector extends Container implements Focusable {
   focused = false;
+  private selectedIndex = 0;
+  private readonly options: Array<{ type: LoginAuthType; label: string }> = [
+    { type: "subscription", label: "Use a subscription" },
+    { type: "api_key", label: "Use an API key" },
+  ];
 
   constructor(
-    private readonly onSelect: () => void,
+    private readonly onSelect: (authType: LoginAuthType) => void,
     private readonly onCancel: () => void,
   ) {
     super();
-    this.addChild(new Text(chalk.bold("Select provider to configure:"), 1, 0));
-    this.addChild(new Text(`${chalk.cyan(">")} ${chalk.cyan("ChatGPT Codex")} ${chalk.dim("openai-codex")}`, 1, 0));
-    this.addChild(new Text(chalk.dim("Press Enter to login, Esc to cancel."), 1, 0));
+    this.updateList();
+  }
+
+  private updateList(): void {
+    this.clear();
+    this.addChild(new Text(chalk.bold("Select authentication method:"), 1, 0));
+    this.addChild(new Text("", 1, 0));
+    for (const [index, option] of this.options.entries()) {
+      const selected = index === this.selectedIndex;
+      const prefix = selected ? chalk.cyan("→ ") : "  ";
+      const label = selected ? chalk.cyan(option.label) : option.label;
+      this.addChild(new Text(`${prefix}${label}`, 1, 0));
+    }
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, "enter")) this.onSelect();
+    if (matchesKey(data, "up")) this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+    else if (matchesKey(data, "down")) this.selectedIndex = Math.min(this.options.length - 1, this.selectedIndex + 1);
+    else if (matchesKey(data, "enter")) this.onSelect(this.options[this.selectedIndex]!.type);
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.onCancel();
+    this.updateList();
+  }
+}
+
+class LoginProviderSelector extends Container implements Focusable {
+  focused = false;
+  private readonly searchInput = new Input();
+  private selectedIndex = 0;
+
+  constructor(
+    private readonly title: string,
+    private readonly providers: Array<{ id: string; label: string }>,
+    private readonly getStatus: (providerId: string) => { configured: boolean },
+    private readonly onSelect: (providerId: string) => void,
+    private readonly onCancel: () => void,
+  ) {
+    super();
+    this.searchInput.onSubmit = () => this.onSelect(this.providers[this.selectedIndex]!.id);
+    this.updateList();
+  }
+
+  private updateList(): void {
+    this.clear();
+    this.addChild(new Text(chalk.bold(this.title), 1, 0));
+    this.addChild(new Text("", 1, 0));
+    this.addChild(this.searchInput);
+    this.addChild(new Text("", 1, 0));
+    for (const [index, provider] of this.providers.entries()) {
+      const selected = index === this.selectedIndex;
+      const prefix = selected ? chalk.cyan("→ ") : "  ";
+      const label = selected ? chalk.cyan(provider.label) : provider.label;
+      const configured = this.getStatus(provider.id).configured;
+      const status = configured ? chalk.green(" ✓ configured") : chalk.dim(" • unconfigured");
+      this.addChild(new Text(`${prefix}${label}${status}`, 1, 0));
+    }
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, "up")) this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+    else if (matchesKey(data, "down")) this.selectedIndex = Math.min(this.providers.length - 1, this.selectedIndex + 1);
+    else if (matchesKey(data, "enter")) this.onSelect(this.providers[this.selectedIndex]!.id);
+    else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.onCancel();
+    else this.searchInput.handleInput(data);
+    this.updateList();
+  }
+}
+
+class ApiKeyLoginDialog extends Container implements Focusable {
+  private readonly input = new Input();
+  focused = false;
+
+  constructor(
+    private readonly providerName: string,
+    private readonly onSubmit: (apiKey: string) => void,
+    private readonly onCancel: () => void,
+  ) {
+    super();
+    this.input.onSubmit = (value) => this.onSubmit(value);
+    this.addChild(new Text(chalk.bold(`Login to ${providerName}`), 1, 0));
+    this.addChild(new Text("", 1, 0));
+    this.addChild(new Text(" Enter API key:", 1, 0));
+    this.addChild(this.input);
+  }
+
+  handleInput(data: string): void {
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.onCancel();
+    else this.input.handleInput(data);
   }
 }
 
@@ -76,13 +154,14 @@ class ModelSelector extends Container implements Focusable {
 
   constructor(
     private readonly models: Model<any>[],
+    private readonly currentProviderId: string,
     private readonly currentModelId: string,
-    private readonly onSelect: (modelId: string) => void,
+    private readonly onSelect: (providerId: string, modelId: string) => void,
     private readonly onCancel: () => void,
   ) {
     super();
     this.filteredModels = models;
-    const modelIndex = models.findIndex((model) => model.id === currentModelId);
+    const modelIndex = models.findIndex((model) => model.provider === currentProviderId && model.id === currentModelId);
     this.selectedModelIndex = modelIndex >= 0 ? modelIndex : 0;
     this.searchInput.onSubmit = () => this.selectCurrent();
 
@@ -106,9 +185,9 @@ class ModelSelector extends Container implements Focusable {
     const visibleModels = this.filteredModels.slice(0, 10);
     for (const [index, model] of visibleModels.entries()) {
       const selected = index === this.selectedModelIndex;
-      const current = model.id === this.currentModelId ? chalk.green(" ✓") : "";
+      const current = model.provider === this.currentProviderId && model.id === this.currentModelId ? chalk.green(" ✓") : "";
       const prefix = selected ? chalk.cyan("> ") : "  ";
-      this.list.addChild(new Text(`${prefix}${model.id}${current}`, 1, 0));
+      this.list.addChild(new Text(`${prefix}${model.provider}/${model.id}${current}`, 1, 0));
     }
     this.list.addChild(new Text("", 1, 0));
     this.list.addChild(new Text(chalk.dim("Up/down model, Enter select, Esc cancel."), 1, 0));
@@ -129,7 +208,7 @@ class ModelSelector extends Container implements Focusable {
 
   private selectCurrent(): void {
     const model = this.filteredModels[this.selectedModelIndex];
-    if (model) this.onSelect(model.id);
+    if (model) this.onSelect(model.provider, model.id);
   }
 }
 
@@ -318,12 +397,12 @@ export class ChatApp {
   }
 
   private updateModelStatus(): void {
-    const text = `${this.chatClient.getModelId()} • ${this.chatClient.getReasoningLevel()}`;
+    const text = this.chatClient.hasAvailableModels()
+      ? `${this.chatClient.getProviderId()}/${this.chatClient.getModelId()} • ${this.chatClient.getReasoningLevel()}`
+      : `No authenticated model • ${this.chatClient.getReasoningLevel()}`;
     const usage = this.chatClient.getUsage();
     const cost = `$${usage.cost.toFixed(3)}${usage.usingSubscription ? " (sub)" : ""}`;
-    const percent = usage.contextPercent === null ? "?" : `${usage.contextPercent.toFixed(1)}%`;
-    const context = `${percent}/${formatTokens(usage.contextWindow)}`;
-    this.modelStatus.setLeftText(chalk.dim(`${cost} ${context}`));
+    this.modelStatus.setLeftText(chalk.dim(cost));
     this.modelStatus.setRightText(chalk.dim(text));
   }
 
@@ -332,7 +411,12 @@ export class ChatApp {
     const currentIndex = reasoningOptions.findIndex((option) => option.level === current);
     const next = reasoningOptions[(currentIndex + 1) % reasoningOptions.length];
     if (!next) return;
-    await this.chatClient.setModel(this.chatClient.getModelId(), next.level);
+    if (!this.chatClient.hasAvailableModels()) {
+      this.updateModelStatus();
+      this.tui.requestRender();
+      return;
+    }
+    await this.chatClient.setModel(this.chatClient.getProviderId(), this.chatClient.getModelId(), next.level);
     this.updateModelStatus();
     this.tui.requestRender();
   }
@@ -351,18 +435,85 @@ export class ChatApp {
     this.addMessage("assistant", message);
   }
 
-  private selectLoginProvider(): Promise<boolean> {
+  private selectLoginAuthType(): Promise<LoginAuthType | undefined> {
     return new Promise((resolve) => {
-      const done = (selected: boolean) => {
+      const done = (authType: LoginAuthType | undefined) => {
         this.tui.removeChild(selector);
         this.tui.setFocus(this.editor);
         this.tui.requestRender();
-        resolve(selected);
+        resolve(authType);
       };
-      const selector = new LoginProviderSelector(() => done(true), () => done(false));
+      const selector = new LoginAuthTypeSelector((authType) => done(authType), () => done(undefined));
       const editorIndex = this.tui.children.indexOf(this.editor);
       this.tui.children.splice(editorIndex, 0, selector);
       this.tui.setFocus(selector);
+      this.tui.requestRender();
+    });
+  }
+
+  private selectLoginProvider(authType: LoginAuthType): Promise<string | undefined> {
+    return new Promise((resolve) => {
+      const providers = authType === "subscription"
+        ? [{ id: "openai-codex", label: "ChatGPT Plus/Pro (Codex Subscription)" }]
+        : [{ id: "google", label: "Google Gemini" }];
+      const done = (providerId: string | undefined) => {
+        this.tui.removeChild(selector);
+        this.tui.setFocus(this.editor);
+        this.tui.requestRender();
+        resolve(providerId);
+      };
+      const selector = new LoginProviderSelector(
+        "Select provider to configure:",
+        providers,
+        (providerId) => this.chatClient.getProviderAuthStatus(providerId),
+        (providerId) => done(providerId),
+        () => done(undefined),
+      );
+      const editorIndex = this.tui.children.indexOf(this.editor);
+      this.tui.children.splice(editorIndex, 0, selector);
+      this.tui.setFocus(selector);
+      this.tui.requestRender();
+    });
+  }
+
+  private selectLogoutProvider(): Promise<string | undefined> {
+    return new Promise((resolve) => {
+      const providers = [
+        { id: "openai-codex", label: "ChatGPT Plus/Pro (Codex Subscription)" },
+        { id: "google", label: "Google Gemini" },
+      ];
+      const done = (providerId: string | undefined) => {
+        this.tui.removeChild(selector);
+        this.tui.setFocus(this.editor);
+        this.tui.requestRender();
+        resolve(providerId);
+      };
+      const selector = new LoginProviderSelector(
+        "Select provider to logout:",
+        providers,
+        (providerId) => this.chatClient.getProviderAuthStatus(providerId),
+        (providerId) => done(providerId),
+        () => done(undefined),
+      );
+      const editorIndex = this.tui.children.indexOf(this.editor);
+      this.tui.children.splice(editorIndex, 0, selector);
+      this.tui.setFocus(selector);
+      this.tui.requestRender();
+    });
+  }
+
+  private promptApiKey(providerName: string): Promise<string | undefined> {
+    return new Promise((resolve) => {
+      const done = (apiKey: string | undefined) => {
+        this.tui.removeChild(dialog);
+        this.tui.setFocus(this.editor);
+        this.tui.requestRender();
+        resolve(apiKey);
+      };
+      const dialog = new ApiKeyLoginDialog(providerName, (apiKey) => done(apiKey), () => done(undefined));
+      const editorIndex = this.tui.children.indexOf(this.editor);
+      this.tui.children.splice(editorIndex, 0, dialog);
+      this.tui.setFocus(dialog);
       this.tui.requestRender();
     });
   }
@@ -377,11 +528,12 @@ export class ChatApp {
       };
       const selector = new ModelSelector(
         this.chatClient.getAvailableModels(),
+        this.chatClient.getProviderId(),
         this.chatClient.getModelId(),
-        (modelId) => {
-          void this.chatClient.setModel(modelId, this.chatClient.getReasoningLevel()).then(() => {
+        (providerId, modelId) => {
+          void this.chatClient.setModel(providerId, modelId, this.chatClient.getReasoningLevel()).then(() => {
             this.updateModelStatus();
-            this.showStatus(`Model: ${modelId}`);
+            this.showStatus(`Model: ${providerId}/${modelId}`);
             done();
           });
         },
@@ -405,15 +557,28 @@ export class ChatApp {
     if (!text || this.waiting) return;
 
     if (text === "/login" || text.startsWith("/login ")) {
-      const selected = await this.selectLoginProvider();
-      if (!selected) return;
+      const authType = await this.selectLoginAuthType();
+      if (!authType) return;
+
+      const providerId = await this.selectLoginProvider(authType);
+      if (!providerId) return;
 
       try {
-        await loginChatGpt({
-          onStatus: (message) => this.showStatus(message),
-          onPrompt: (message) => this.prompt(message),
-        });
-        this.showStatus("ChatGPT OAuth login complete.");
+        if (providerId === "openai-codex") {
+          await loginChatGpt({
+            onStatus: (message) => this.showStatus(message),
+            onPrompt: (message) => this.prompt(message),
+          });
+          this.showStatus("ChatGPT OAuth login complete.");
+        } else {
+          const apiKey = await this.promptApiKey("Google Gemini");
+          if (!apiKey) return;
+          await loginProviderApiKey(providerId, apiKey);
+          this.showStatus("Gemini API key saved.");
+        }
+        this.chatClient.refreshAuth();
+        await this.chatClient.selectFirstAvailableModel(providerId);
+        this.updateModelStatus();
       } catch (error) {
         this.addMessage("error", error instanceof Error ? error.message : "Login failed");
       }
@@ -422,13 +587,23 @@ export class ChatApp {
     }
 
     if (text === "/model" || text.startsWith("/model ")) {
+      if (!this.chatClient.hasAvailableModels()) {
+        this.showStatus("No authenticated model. Use /login to configure a provider.");
+        return;
+      }
       await this.selectModel();
       return;
     }
 
     if (text === "/logout" || text.startsWith("/logout ")) {
-      await logoutChatGpt();
-      this.showStatus("Removed ChatGPT Codex authentication.");
+      const providerId = await this.selectLogoutProvider();
+      if (!providerId) return;
+
+      await logoutProvider(providerId);
+      this.chatClient.refreshAuth();
+      await this.chatClient.selectFirstAvailableModel();
+      this.updateModelStatus();
+      this.showStatus(`Removed ${providerId} authentication.`);
       return;
     }
 
