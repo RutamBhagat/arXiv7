@@ -1,52 +1,29 @@
 import { env } from "@skyclad-bun/env/web";
-import type { Agent } from "@earendil-works/pi-agent-core";
+import type { Agent, AgentEvent, AgentMessage, AgentState } from "@earendil-works/pi-agent-core";
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
-export type ServerModel = {
-  provider: string;
-  id: string;
-  name?: string;
+type RemoteSessionEvent = AgentEvent | {
+  type: "snapshot";
+  snapshot: ServerSessionSnapshot;
 };
 
 export type ServerSessionSnapshot = {
   sessionId: string;
-  sessionFile?: string;
   title: string;
-  model: ServerModel | undefined;
-  thinkingLevel: ThinkingLevel;
-  messages: Array<{ role?: string; content?: unknown }>;
+  state: Pick<AgentState, "systemPrompt" | "model" | "thinkingLevel" | "messages">;
   isStreaming: boolean;
-};
-
-type RemoteSessionState = {
-  systemPrompt: string;
-  model: ServerModel | undefined;
-  thinkingLevel: ThinkingLevel;
-  messages: Array<{ role?: string; content?: unknown }>;
-  tools: unknown[];
-  isStreaming: boolean;
-  streamingMessage?: unknown;
-  pendingToolCalls: ReadonlySet<string>;
-};
-
-type RemoteSessionEvent = {
-  type: string;
-  [key: string]: unknown;
 };
 
 export class RemoteChatSession {
-  public state: RemoteSessionState;
+  public state: AgentState;
   public streamFn?: unknown;
   public getApiKey?: unknown;
 
-  private listeners = new Set<
-    (event: RemoteSessionEvent) => void | Promise<void>
-  >();
-  private eventSource?: EventSource;
+  private listeners = new Set<(event: RemoteSessionEvent) => void | Promise<void>>();
+  private abortController?: AbortController;
+  private idlePromise?: Promise<void>;
   private title: string;
-  private stateModel: ServerModel | undefined;
-  private stateThinkingLevel: ThinkingLevel;
   private suppressStateSync = false;
 
   constructor(
@@ -54,40 +31,51 @@ export class RemoteChatSession {
     snapshot: ServerSessionSnapshot,
   ) {
     this.title = snapshot.title;
-    this.stateModel = snapshot.model;
-    this.stateThinkingLevel = snapshot.thinkingLevel;
-
     this.state = {
-      systemPrompt: "",
-      model: snapshot.model,
-      thinkingLevel: snapshot.thinkingLevel,
-      messages: [...snapshot.messages],
+      systemPrompt: snapshot.state.systemPrompt,
+      model: snapshot.state.model,
+      thinkingLevel: snapshot.state.thinkingLevel as ThinkingLevel,
       tools: [],
+      messages: [...snapshot.state.messages],
       isStreaming: snapshot.isStreaming,
       streamingMessage: undefined,
       pendingToolCalls: new Set(),
-    };
+      errorMessage: undefined,
+    } as AgentState;
+
+    let model = this.state.model;
+    let thinkingLevel = this.state.thinkingLevel;
+    let systemPrompt = this.state.systemPrompt;
 
     Object.defineProperties(this.state, {
       model: {
         enumerable: true,
         configurable: true,
-        get: () => this.stateModel,
-        set: (model: ServerModel | undefined) => {
-          void this.syncModel(model);
+        get: () => model,
+        set: (nextModel: AgentState["model"]) => {
+          model = nextModel;
+          void this.syncState({ model: nextModel });
         },
       },
       thinkingLevel: {
         enumerable: true,
         configurable: true,
-        get: () => this.stateThinkingLevel,
-        set: (thinkingLevel: ThinkingLevel) => {
-          void this.syncThinkingLevel(thinkingLevel);
+        get: () => thinkingLevel,
+        set: (nextThinkingLevel: ThinkingLevel) => {
+          thinkingLevel = nextThinkingLevel;
+          void this.syncState({ thinkingLevel: nextThinkingLevel });
+        },
+      },
+      systemPrompt: {
+        enumerable: true,
+        configurable: true,
+        get: () => systemPrompt,
+        set: (nextSystemPrompt: string) => {
+          systemPrompt = nextSystemPrompt;
+          void this.syncState({ systemPrompt: nextSystemPrompt });
         },
       },
     });
-
-    this.connect();
   }
 
   subscribe(listener: (event: RemoteSessionEvent) => void | Promise<void>) {
@@ -97,113 +85,200 @@ export class RemoteChatSession {
     };
   }
 
-  async prompt(text: string) {
-    this.state.isStreaming = true;
-    try {
-      return await this.request<ServerSessionSnapshot>(
-        `/api/chat/sessions/${encodeURIComponent(this.sessionId)}/prompt`,
-        {
-          method: "POST",
-          body: JSON.stringify({ text }),
-        },
-      );
-    } catch (error) {
-      this.state.isStreaming = false;
-      this.state.streamingMessage = undefined;
-      throw error;
+  async prompt(input: string | AgentMessage | AgentMessage[]) {
+    if (this.state.isStreaming) {
+      throw new Error("Agent is already processing.");
     }
+
+    this.abortController = new AbortController();
+    this.setStreaming(true);
+
+    this.idlePromise = this.readPromptStream(input, this.abortController.signal)
+      .catch((error) => {
+        this.patchReadonlyState({
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      })
+      .finally(() => {
+        this.setStreaming(false);
+        this.abortController = undefined;
+      });
+
+    await this.idlePromise;
   }
 
-  async abort() {
-    try {
-      return await this.request<ServerSessionSnapshot>(
-        `/api/chat/sessions/${encodeURIComponent(this.sessionId)}/abort`,
-        {
-          method: "POST",
-        },
-      );
-    } finally {
-      this.state.isStreaming = false;
-      this.state.streamingMessage = undefined;
-    }
+  async continue() {
+    await this.prompt({
+      role: "user",
+      content: "Continue.",
+      timestamp: Date.now(),
+    } as AgentMessage);
   }
 
-  async waitForIdle() {
-    return await this.request<ServerSessionSnapshot>(
-      `/api/chat/sessions/${encodeURIComponent(this.sessionId)}/idle`,
-      {
-        method: "POST",
-      },
-    );
+  abort() {
+    this.abortController?.abort();
+    void fetch(`${env.VITE_SERVER_URL}/api/agent/sessions/${encodeURIComponent(this.sessionId)}/abort`, {
+      method: "POST",
+    });
+    this.setStreaming(false);
+  }
+
+  waitForIdle() {
+    return this.idlePromise ?? Promise.resolve();
+  }
+
+  reset() {
+    this.state.messages = [];
+    this.setStreaming(false);
+  }
+
+  steer(message: AgentMessage) {
+    void this.prompt(message);
+  }
+
+  followUp(message: AgentMessage) {
+    void this.prompt(message);
+  }
+
+  clearSteeringQueue() {}
+  clearFollowUpQueue() {}
+  clearAllQueues() {}
+  hasQueuedMessages() {
+    return false;
   }
 
   async setSessionName(title: string) {
-    return await this.request<ServerSessionSnapshot>(
-      `/api/chat/sessions/${encodeURIComponent(this.sessionId)}/title`,
+    const snapshot = await this.request<ServerSessionSnapshot>(
+      `/api/agent/sessions/${encodeURIComponent(this.sessionId)}/title`,
       {
         method: "PATCH",
         body: JSON.stringify({ title }),
       },
     );
-  }
-
-  async setModel(model: ServerModel | undefined) {
-    await this.syncModel(model);
-    return this.snapshot();
-  }
-
-  async setThinkingLevel(thinkingLevel: ThinkingLevel) {
-    await this.syncThinkingLevel(thinkingLevel);
-    return this.snapshot();
+    this.applySnapshot(snapshot);
+    return snapshot;
   }
 
   dispose() {
-    this.eventSource?.close();
-    this.eventSource = undefined;
+    this.abortController?.abort();
     this.listeners.clear();
   }
 
-  private async syncModel(model: ServerModel | undefined) {
-    const previous = this.stateModel;
-    this.stateModel = model;
-
-    if (this.suppressStateSync || !model) {
-      return;
-    }
+  private async syncState(patch: Partial<Pick<AgentState, "model" | "thinkingLevel" | "systemPrompt">>) {
+    if (this.suppressStateSync) return;
 
     try {
-      await this.request<ServerSessionSnapshot>(
-        `/api/chat/sessions/${encodeURIComponent(this.sessionId)}/model`,
+      await this.request(
+        `/api/agent/sessions/${encodeURIComponent(this.sessionId)}/state`,
         {
           method: "PATCH",
-          body: JSON.stringify({ model }),
+          body: JSON.stringify(patch),
         },
       );
     } catch (error) {
-      this.stateModel = previous;
-      console.error("Failed to update chat model on the server:", error);
+      console.error("Failed to update agent state on the server:", error);
     }
   }
 
-  private async syncThinkingLevel(thinkingLevel: ThinkingLevel) {
-    const previous = this.stateThinkingLevel;
-    this.stateThinkingLevel = thinkingLevel;
+  private async readPromptStream(message: unknown, signal: AbortSignal) {
+    const response = await fetch(
+      `${env.VITE_SERVER_URL}/api/agent/sessions/${encodeURIComponent(this.sessionId)}/prompt`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message }),
+        signal,
+      },
+    );
 
-    if (this.suppressStateSync) {
+    if (!response.ok || !response.body) {
+      throw new Error(await response.text());
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() ?? "";
+
+      for (const frame of frames) {
+        const line = frame.split("\n").find((item) => item.startsWith("data: "));
+        if (!line) continue;
+
+        const event = JSON.parse(line.slice("data: ".length)) as RemoteSessionEvent | { type: "done" } | { type: "server_error"; error: string };
+
+        if (event.type === "done") return;
+        if (event.type === "server_error") throw new Error(event.error);
+
+        this.applyEvent(event);
+        await this.emit(event);
+      }
+    }
+  }
+
+  private applyEvent(event: RemoteSessionEvent) {
+    if (event.type === "snapshot") {
+      this.applySnapshot(event.snapshot);
       return;
     }
 
+    switch (event.type) {
+      case "agent_start":
+      case "turn_start":
+        this.setStreaming(true);
+        break;
+
+      case "message_update":
+        this.patchReadonlyState({ streamingMessage: event.message });
+        break;
+
+      case "message_end":
+        this.patchReadonlyState({ streamingMessage: undefined });
+        this.state.messages = [...this.state.messages, event.message];
+        break;
+
+      case "tool_execution_start": {
+        const pending = new Set(this.state.pendingToolCalls);
+        pending.add(event.toolCallId);
+        this.patchReadonlyState({ pendingToolCalls: pending });
+        break;
+      }
+
+      case "tool_execution_end": {
+        const pending = new Set(this.state.pendingToolCalls);
+        pending.delete(event.toolCallId);
+        this.patchReadonlyState({ pendingToolCalls: pending });
+        break;
+      }
+
+      case "agent_end":
+        this.patchReadonlyState({ streamingMessage: undefined });
+        break;
+    }
+  }
+
+  private applySnapshot(snapshot: ServerSessionSnapshot) {
+    this.suppressStateSync = true;
     try {
-      await this.request<ServerSessionSnapshot>(
-        `/api/chat/sessions/${encodeURIComponent(this.sessionId)}/thinking`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({ thinkingLevel }),
-        },
-      );
-    } catch (error) {
-      this.stateThinkingLevel = previous;
-      console.error("Failed to update chat thinking level on the server:", error);
+      this.sessionId = snapshot.sessionId;
+      this.title = snapshot.title;
+      this.state.systemPrompt = snapshot.state.systemPrompt;
+      this.state.model = snapshot.state.model;
+      this.state.thinkingLevel = snapshot.state.thinkingLevel;
+      this.state.messages = [...snapshot.state.messages];
+      this.patchReadonlyState({
+        isStreaming: snapshot.isStreaming,
+        streamingMessage: snapshot.isStreaming ? this.state.streamingMessage : undefined,
+      });
+    } finally {
+      this.suppressStateSync = false;
     }
   }
 
@@ -220,90 +295,7 @@ export class RemoteChatSession {
       throw new Error(await response.text());
     }
 
-    const data = (await response.json()) as T;
-    if (this.isSessionSnapshot(data)) {
-      this.applySnapshot(data);
-    }
-    return data;
-  }
-
-  private connect() {
-    this.eventSource = new EventSource(
-      `${env.VITE_SERVER_URL}/api/chat/sessions/${encodeURIComponent(this.sessionId)}/events`,
-    );
-
-    this.eventSource.addEventListener("event", (rawEvent) => {
-      const event = JSON.parse(
-        (rawEvent as MessageEvent<string>).data,
-      ) as RemoteSessionEvent;
-      this.applyEvent(event);
-      void this.emit(event);
-    });
-
-    this.eventSource.addEventListener("snapshot", (rawEvent) => {
-      const snapshot = JSON.parse(
-        (rawEvent as MessageEvent<string>).data,
-      ) as ServerSessionSnapshot;
-      this.applySnapshot(snapshot);
-      void this.emit({ type: "snapshot", snapshot });
-    });
-  }
-
-  private applyEvent(event: RemoteSessionEvent) {
-    if (event.type === "agent_start" || event.type === "turn_start") {
-      this.state.isStreaming = true;
-      return;
-    }
-
-    if (event.type === "message_start") {
-      const message = event.message as { role?: string } | undefined;
-      if (message?.role && message.role !== "assistant") {
-        this.state.messages = [
-          ...this.state.messages,
-          event.message as { role?: string; content?: unknown },
-        ];
-      }
-      return;
-    }
-
-    if (event.type === "message_update") {
-      this.state.isStreaming = true;
-      this.state.streamingMessage = event.message;
-      return;
-    }
-
-    if (event.type === "agent_end") {
-      this.state.isStreaming = false;
-      this.state.streamingMessage = undefined;
-    }
-  }
-
-  private applySnapshot(snapshot: ServerSessionSnapshot) {
-    this.suppressStateSync = true;
-    try {
-      this.sessionId = snapshot.sessionId;
-      this.title = snapshot.title;
-      this.stateModel = snapshot.model;
-      this.stateThinkingLevel = snapshot.thinkingLevel;
-      this.state.messages = [...snapshot.messages];
-      this.state.isStreaming = snapshot.isStreaming;
-      if (!snapshot.isStreaming) {
-        this.state.streamingMessage = undefined;
-      }
-    } finally {
-      this.suppressStateSync = false;
-    }
-  }
-
-  private snapshot(): ServerSessionSnapshot {
-    return {
-      sessionId: this.sessionId,
-      title: this.title,
-      model: this.stateModel,
-      thinkingLevel: this.stateThinkingLevel,
-      messages: [...this.state.messages],
-      isStreaming: this.state.isStreaming,
-    };
+    return (await response.json()) as T;
   }
 
   private async emit(event: RemoteSessionEvent) {
@@ -312,13 +304,16 @@ export class RemoteChatSession {
     }
   }
 
-  private isSessionSnapshot(value: unknown): value is ServerSessionSnapshot {
-    return (
-      typeof value === "object" &&
-      value !== null &&
-      "sessionId" in value &&
-      "messages" in value
-    );
+  private setStreaming(value: boolean) {
+    this.patchReadonlyState({
+      isStreaming: value,
+      streamingMessage: value ? this.state.streamingMessage : undefined,
+      pendingToolCalls: value ? this.state.pendingToolCalls : new Set<string>(),
+    });
+  }
+
+  private patchReadonlyState(patch: Partial<AgentState>) {
+    Object.assign(this.state as any, patch);
   }
 }
 
@@ -330,7 +325,7 @@ export async function createSession(sessionId?: string) {
   if (sessionId) {
     try {
       const response = await fetch(
-        `${env.VITE_SERVER_URL}/api/chat/sessions/${encodeURIComponent(sessionId)}`,
+        `${env.VITE_SERVER_URL}/api/agent/sessions/${encodeURIComponent(sessionId)}`,
       );
       if (response.ok) {
         return (await response.json()) as ServerSessionSnapshot;
@@ -340,10 +335,9 @@ export async function createSession(sessionId?: string) {
     }
   }
 
-  const response = await fetch(`${env.VITE_SERVER_URL}/api/chat/sessions`, {
+  const response = await fetch(`${env.VITE_SERVER_URL}/api/agent/sessions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({}),
   });
 
   if (!response.ok) {

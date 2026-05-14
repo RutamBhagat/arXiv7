@@ -3,7 +3,7 @@ import { env } from "@skyclad-bun/env/server";
 import { Elysia } from "elysia";
 import { logger } from "@bogeychan/elysia-logger";
 
-import { chatRoutes } from "./features/chat/routes";
+import { agentRoutes } from "./features/agent/routes";
 import { ingestRoutes } from "./features/ingest/routes";
 import { retrievalRoutes } from "./features/retrieval/routes";
 
@@ -16,7 +16,7 @@ new Elysia()
     }),
   )
   .get("/", () => "OK")
-  .use(chatRoutes)
+  .use(agentRoutes)
   .use(ingestRoutes)
   .use(retrievalRoutes)
   .listen(3000, () => {
