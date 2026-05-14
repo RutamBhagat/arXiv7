@@ -8,6 +8,10 @@
     "dev": "vite dev"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.74.0",
+    "@earendil-works/pi-ai": "^0.74.0",
+    "@earendil-works/pi-web-ui": "^0.74.0",
+    "@mariozechner/mini-lit": "^0.2.1",
     "@skyclad-bun/env": "workspace:*",
     "@skyclad-bun/ui": "workspace:*",
     "@tailwindcss/vite": "^4.2.2",
@@ -15,6 +19,7 @@
     "@tanstack/react-router": "^1.168.22",
     "@tanstack/react-start": "^1.167.41",
     "dotenv": "catalog:",
+    "lit": "^3.3.1",
     "lucide-react": "^1.8.0",
     "next-themes": "catalog:",
     "react": "^19.2.5",

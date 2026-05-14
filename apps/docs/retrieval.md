@@ -37,7 +37,7 @@ Input:
 
 ```ts
 {
-  paperName, query
+  (paperName, query);
 }
 ```
 
@@ -94,7 +94,7 @@ Input:
 
 ```ts
 {
-  paperId, query, lexicalQuery
+  (paperId, query, lexicalQuery);
 }
 ```
 
@@ -258,7 +258,7 @@ Each chunk includes:
 
 ```ts
 {
-  chunkId, section, text, rrfScore, semanticScore, lexicalScore
+  (chunkId, section, text, rrfScore, semanticScore, lexicalScore);
 }
 ```
 

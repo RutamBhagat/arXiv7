@@ -28,7 +28,7 @@ This is the actual ingestion endpoint. It accepts:
 
 ```ts
 {
-  arxivId, paperId, title, authors, summary, sourceUrl
+  (arxivId, paperId, title, authors, summary, sourceUrl);
 }
 ```
 
@@ -90,7 +90,6 @@ paper_docs {
 ```
 
 The `searchText` column is generated from `sectionTitle + markdown` using Postgres `to_tsvector('simple', ...)`, then indexed with GIN. That is a good choice for papers because the `simple` dictionary avoids over-stemming or dropping technical terms, acronyms, model names, math symbols
-
 
 ### `ingestion_jobs`
 

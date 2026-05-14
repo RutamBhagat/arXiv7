@@ -11,9 +11,9 @@
     "clean": "shx rm -rf dist"
   },
   "dependencies": {
-    "@mariozechner/mini-lit": "^0.2.0",
     "@earendil-works/pi-ai": "file:../../ai",
     "@earendil-works/pi-web-ui": "file:../",
+    "@mariozechner/mini-lit": "^0.2.0",
     "lit": "^3.3.1",
     "lucide": "^0.544.0"
   },
