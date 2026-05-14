@@ -73,7 +73,7 @@ export class RemoteChatSession {
   async prompt(text: string) {
     this.state.isStreaming = true;
     return await this.request<ServerSessionSnapshot>(
-      `/sessions/${encodeURIComponent(this.sessionId)}/prompt`,
+      `/api/chat/sessions/${encodeURIComponent(this.sessionId)}/prompt`,
       {
         method: "POST",
         body: JSON.stringify({ text }),
@@ -83,7 +83,7 @@ export class RemoteChatSession {
 
   async abort() {
     return await this.request<ServerSessionSnapshot>(
-      `/sessions/${encodeURIComponent(this.sessionId)}/abort`,
+      `/api/chat/sessions/${encodeURIComponent(this.sessionId)}/abort`,
       {
         method: "POST",
       },
@@ -92,7 +92,7 @@ export class RemoteChatSession {
 
   async waitForIdle() {
     return await this.request<ServerSessionSnapshot>(
-      `/sessions/${encodeURIComponent(this.sessionId)}/idle`,
+      `/api/chat/sessions/${encodeURIComponent(this.sessionId)}/idle`,
       {
         method: "POST",
       },
@@ -101,7 +101,7 @@ export class RemoteChatSession {
 
   async setSessionName(title: string) {
     return await this.request<ServerSessionSnapshot>(
-      `/sessions/${encodeURIComponent(this.sessionId)}/title`,
+      `/api/chat/sessions/${encodeURIComponent(this.sessionId)}/title`,
       {
         method: "PATCH",
         body: JSON.stringify({ title }),
@@ -137,7 +137,7 @@ export class RemoteChatSession {
 
   private connect() {
     this.eventSource = new EventSource(
-      `${env.VITE_SERVER_URL}/sessions/${encodeURIComponent(this.sessionId)}/events`,
+      `${env.VITE_SERVER_URL}/api/chat/sessions/${encodeURIComponent(this.sessionId)}/events`,
     );
 
     this.eventSource.addEventListener("event", (rawEvent) => {
@@ -221,7 +221,7 @@ export async function createSession(sessionId?: string) {
   if (sessionId) {
     try {
       const response = await fetch(
-        `${env.VITE_SERVER_URL}/sessions/${encodeURIComponent(sessionId)}`,
+        `${env.VITE_SERVER_URL}/api/chat/sessions/${encodeURIComponent(sessionId)}`,
       );
       if (response.ok) {
         return (await response.json()) as ServerSessionSnapshot;
@@ -231,7 +231,7 @@ export async function createSession(sessionId?: string) {
     }
   }
 
-  const response = await fetch(`${env.VITE_SERVER_URL}/sessions`, {
+  const response = await fetch(`${env.VITE_SERVER_URL}/api/chat/sessions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({}),
