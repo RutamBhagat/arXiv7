@@ -5,14 +5,8 @@ import { Agent } from "@earendil-works/pi-agent-core";
 import { getModel, type Model, type TextContent } from "@earendil-works/pi-ai";
 import { Button } from "@skyclad-bun/ui/components/button";
 import { Input } from "@skyclad-bun/ui/components/input";
-import { Bell, Check, History, Plus, Settings, X } from "lucide-react";
+import { Check, History, Plus, Settings, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-
-import {
-  createSystemNotification,
-  customConvertToLlm,
-  registerCustomMessageRenderers,
-} from "@/lib/pi-custom-messages";
 
 import {
   ApiKeyPromptDialog,
@@ -80,7 +74,6 @@ let customMessagesRegistered = false;
 
 function registerPiMessages() {
   if (customMessagesRegistered) return;
-  registerCustomMessageRenderers();
   customMessagesRegistered = true;
 }
 
@@ -205,7 +198,6 @@ export default function PiChatApp() {
 
       const agent = new Agent({
         initialState: initialState || (await createDefaultState()),
-        convertToLlm: customConvertToLlm,
       });
 
       sessionRef.current.agent = agent;
@@ -321,14 +313,6 @@ export default function PiChatApp() {
       },
     );
   }, [loadSession, startNewSession]);
-
-  const addNotification = useCallback(() => {
-    sessionRef.current.agent?.steer(
-      createSystemNotification(
-        "This is a custom message! It appears in the UI but is never sent to the LLM.",
-      ),
-    );
-  }, []);
 
   const openSettings = useCallback(() => {
     SettingsDialog.open([new ProvidersModelsTab(), new ProxyTab()]);
@@ -446,15 +430,6 @@ export default function PiChatApp() {
         </div>
 
         <div className="flex shrink-0 items-center gap-1 px-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            title="Add notification"
-            onClick={addNotification}
-          >
-            <Bell />
-          </Button>
           <Button
             type="button"
             variant="ghost"
