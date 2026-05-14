@@ -2,7 +2,7 @@ import "@tanstack/react-start/client-only";
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
-import { getModel, type TextContent } from "@earendil-works/pi-ai";
+import { getModel, type Model, type TextContent } from "@earendil-works/pi-ai";
 import { Button } from "@skyclad-bun/ui/components/button";
 import { Input } from "@skyclad-bun/ui/components/input";
 import { Bell, Check, History, Plus, Settings, X } from "lucide-react";
@@ -20,6 +20,7 @@ import {
   ChatPanel,
   CustomProvidersStore,
   IndexedDBStorageBackend,
+  ModelSelector,
   ProviderKeysStore,
   ProvidersModelsTab,
   ProxyTab,
@@ -39,6 +40,8 @@ Available tools:
 - Artifacts: Create interactive HTML, SVG, Markdown, and text artifacts
 
 Feel free to use these tools when needed to provide accurate and helpful responses.`;
+
+const DEFAULT_MODEL_KEY = "chat.defaultModel";
 
 type SessionRefs = {
   currentSessionId?: string;
@@ -124,10 +127,12 @@ function clearSessionUrl() {
   window.history.replaceState({}, "", url);
 }
 
-function createDefaultState(): Partial<AgentState> {
+async function createDefaultState(): Promise<Partial<AgentState>> {
+  const savedModel = await storage.settings.get<Model<any>>(DEFAULT_MODEL_KEY);
+
   return {
     systemPrompt: SYSTEM_PROMPT,
-    model: getModel("anthropic", "claude-sonnet-4-5-20250929"),
+    model: savedModel || getModel("anthropic", "claude-sonnet-4-5-20250929"),
     thinkingLevel: "off",
     messages: [],
     tools: [],
@@ -199,7 +204,7 @@ export default function PiChatApp() {
       unsubscribeRef.current?.();
 
       const agent = new Agent({
-        initialState: initialState || createDefaultState(),
+        initialState: initialState || (await createDefaultState()),
         convertToLlm: customConvertToLlm,
       });
 
@@ -228,6 +233,14 @@ export default function PiChatApp() {
       await chatPanel.setAgent(agent, {
         onApiKeyRequired: async (provider: string) => {
           return await ApiKeyPromptDialog.prompt(provider);
+        },
+        onModelSelect: () => {
+          ModelSelector.open(agent.state.model, (model) => {
+            agent.state.model = model;
+            void storage.settings.set(DEFAULT_MODEL_KEY, model);
+            void saveSession();
+            chatPanel.agentInterface?.requestUpdate();
+          });
         },
         toolsFactory: (_agent, _agentInterface, _artifactsPanel, runtimeProvidersFactory) => {
           const replTool = createJavaScriptReplTool();
