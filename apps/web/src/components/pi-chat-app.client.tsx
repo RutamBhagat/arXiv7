@@ -1,111 +1,224 @@
 import "@tanstack/react-start/client-only";
 
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { Agent } from "@earendil-works/pi-agent-core";
-import { getModel, type Model, type TextContent } from "@earendil-works/pi-ai";
 import { Button } from "@skyclad-bun/ui/components/button";
 import { Input } from "@skyclad-bun/ui/components/input";
-import { Check, History, Plus, Settings, X } from "lucide-react";
+import { Check, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import {
-  ApiKeyPromptDialog,
-  AppStorage,
-  ChatPanel,
-  CustomProvidersStore,
-  IndexedDBStorageBackend,
-  ModelSelector,
-  ProviderKeysStore,
-  ProvidersModelsTab,
-  ProxyTab,
-  SessionListDialog,
-  SessionsStore,
-  SettingsDialog,
-  SettingsStore,
-  createJavaScriptReplTool,
-  setAppStorage,
-  type AgentState,
-} from "@earendil-works/pi-web-ui";
+import { env } from "@skyclad-bun/env/web";
+import { ChatPanel } from "@earendil-works/pi-web-ui";
+import type { Agent } from "@earendil-works/pi-agent-core";
 
-const SYSTEM_PROMPT = `You are a helpful AI assistant with access to various tools.
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
-Available tools:
-- JavaScript REPL: Execute JavaScript code in a sandboxed browser environment (can do calculations, get time, process data, create visualizations, etc.)
-- Artifacts: Create interactive HTML, SVG, Markdown, and text artifacts
-
-Feel free to use these tools when needed to provide accurate and helpful responses.`;
-
-const DEFAULT_MODEL_KEY = "chat.defaultModel";
-
-type SessionRefs = {
-  currentSessionId?: string;
-  currentTitle: string;
-  agent?: Agent;
+type ServerModel = {
+  provider: string;
+  id: string;
+  name?: string;
 };
 
-const settings = new SettingsStore();
-const providerKeys = new ProviderKeysStore();
-const sessions = new SessionsStore();
-const customProviders = new CustomProvidersStore();
+type ServerSessionSnapshot = {
+  sessionId: string;
+  sessionFile?: string;
+  title: string;
+  model: ServerModel | undefined;
+  thinkingLevel: ThinkingLevel;
+  messages: Array<{ role?: string; content?: unknown }>;
+  isStreaming: boolean;
+};
 
-const configs = [
-  settings.getConfig(),
-  SessionsStore.getMetadataConfig(),
-  providerKeys.getConfig(),
-  customProviders.getConfig(),
-  sessions.getConfig(),
-];
+type RemoteSessionState = {
+  systemPrompt: string;
+  model: ServerModel | undefined;
+  thinkingLevel: ThinkingLevel;
+  messages: Array<{ role?: string; content?: unknown }>;
+  tools: unknown[];
+  isStreaming: boolean;
+  streamingMessage?: unknown;
+  pendingToolCalls: ReadonlySet<string>;
+};
 
-const backend = new IndexedDBStorageBackend({
-  dbName: "skyclad-pi-web",
-  version: 1,
-  stores: configs,
-});
+type RemoteSessionEvent = {
+  type: string;
+  [key: string]: unknown;
+};
 
-settings.setBackend(backend);
-providerKeys.setBackend(backend);
-customProviders.setBackend(backend);
-sessions.setBackend(backend);
+class RemoteChatSession {
+  public state: RemoteSessionState;
+  public streamFn?: unknown;
+  public getApiKey?: unknown;
 
-const storage = new AppStorage(settings, providerKeys, sessions, customProviders, backend);
-setAppStorage(storage);
+  private listeners = new Set<
+    (event: RemoteSessionEvent) => void | Promise<void>
+  >();
+  private eventSource?: EventSource;
 
-let customMessagesRegistered = false;
+  constructor(
+    public sessionId: string,
+    snapshot: ServerSessionSnapshot,
+  ) {
+    this.state = {
+      systemPrompt: "",
+      model: snapshot.model,
+      thinkingLevel: snapshot.thinkingLevel,
+      messages: [...snapshot.messages],
+      tools: [],
+      isStreaming: snapshot.isStreaming,
+      streamingMessage: undefined,
+      pendingToolCalls: new Set(),
+    };
 
-function registerPiMessages() {
-  if (customMessagesRegistered) return;
-  customMessagesRegistered = true;
-}
-
-function generateTitle(messages: AgentMessage[]) {
-  const firstUserMessage = messages.find((message) => message.role === "user");
-  if (!firstUserMessage) return "";
-
-  const content = firstUserMessage.content;
-  const text =
-    typeof content === "string"
-      ? content
-      : content
-          .filter((item): item is TextContent => item.type === "text")
-          .map((item) => item.text || "")
-          .join(" ");
-
-  const trimmed = text.trim();
-  if (!trimmed) return "";
-
-  const sentenceEnd = trimmed.search(/[.!?]/);
-  if (sentenceEnd > 0 && sentenceEnd <= 50) {
-    return trimmed.substring(0, sentenceEnd + 1);
+    this.connect();
   }
 
-  return trimmed.length <= 50 ? trimmed : `${trimmed.substring(0, 47)}...`;
-}
+  subscribe(listener: (event: RemoteSessionEvent) => void | Promise<void>) {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
 
-function shouldSaveSession(messages: AgentMessage[]) {
-  const hasUserMessage = messages.some((message) => message.role === "user");
-  const hasAssistantMessage = messages.some((message) => message.role === "assistant");
+  async prompt(text: string) {
+    this.state.isStreaming = true;
+    return await this.request<ServerSessionSnapshot>(
+      `/sessions/${encodeURIComponent(this.sessionId)}/prompt`,
+      {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      },
+    );
+  }
 
-  return hasUserMessage && hasAssistantMessage;
+  async abort() {
+    return await this.request<ServerSessionSnapshot>(
+      `/sessions/${encodeURIComponent(this.sessionId)}/abort`,
+      {
+        method: "POST",
+      },
+    );
+  }
+
+  async waitForIdle() {
+    return await this.request<ServerSessionSnapshot>(
+      `/sessions/${encodeURIComponent(this.sessionId)}/idle`,
+      {
+        method: "POST",
+      },
+    );
+  }
+
+  async setSessionName(title: string) {
+    return await this.request<ServerSessionSnapshot>(
+      `/sessions/${encodeURIComponent(this.sessionId)}/title`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ title }),
+      },
+    );
+  }
+
+  dispose() {
+    this.eventSource?.close();
+    this.eventSource = undefined;
+    this.listeners.clear();
+  }
+
+  private async request<T>(path: string, init: RequestInit) {
+    const response = await fetch(`${env.VITE_SERVER_URL}${path}`, {
+      ...init,
+      headers: {
+        "content-type": "application/json",
+        ...(init.headers || {}),
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+
+    const data = (await response.json()) as T;
+    if (this.isSessionSnapshot(data)) {
+      this.applySnapshot(data);
+    }
+    return data;
+  }
+
+  private connect() {
+    this.eventSource = new EventSource(
+      `${env.VITE_SERVER_URL}/sessions/${encodeURIComponent(this.sessionId)}/events`,
+    );
+
+    this.eventSource.addEventListener("event", (rawEvent) => {
+      const event = JSON.parse(
+        (rawEvent as MessageEvent<string>).data,
+      ) as RemoteSessionEvent;
+      this.applyEvent(event);
+      void this.emit(event);
+    });
+
+    this.eventSource.addEventListener("snapshot", (rawEvent) => {
+      const snapshot = JSON.parse(
+        (rawEvent as MessageEvent<string>).data,
+      ) as ServerSessionSnapshot;
+      this.applySnapshot(snapshot);
+      void this.emit({ type: "snapshot", snapshot });
+    });
+  }
+
+  private applyEvent(event: RemoteSessionEvent) {
+    if (event.type === "agent_start" || event.type === "turn_start") {
+      this.state.isStreaming = true;
+      return;
+    }
+
+    if (event.type === "message_start") {
+      const message = event.message as { role?: string } | undefined;
+      if (message?.role && message.role !== "assistant") {
+        this.state.messages = [
+          ...this.state.messages,
+          event.message as { role?: string; content?: unknown },
+        ];
+      }
+      return;
+    }
+
+    if (event.type === "message_update") {
+      this.state.isStreaming = true;
+      this.state.streamingMessage = event.message;
+      return;
+    }
+
+    if (event.type === "agent_end") {
+      this.state.isStreaming = false;
+      this.state.streamingMessage = undefined;
+    }
+  }
+
+  private applySnapshot(snapshot: ServerSessionSnapshot) {
+    this.sessionId = snapshot.sessionId;
+    this.state.model = snapshot.model;
+    this.state.thinkingLevel = snapshot.thinkingLevel;
+    this.state.messages = [...snapshot.messages];
+    this.state.isStreaming = snapshot.isStreaming;
+    if (!snapshot.isStreaming) {
+      this.state.streamingMessage = undefined;
+    }
+  }
+
+  private async emit(event: RemoteSessionEvent) {
+    for (const listener of this.listeners) {
+      await listener(event);
+    }
+  }
+
+  private isSessionSnapshot(value: unknown): value is ServerSessionSnapshot {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "sessionId" in value &&
+      "messages" in value
+    );
+  }
 }
 
 function updateUrl(sessionId: string) {
@@ -120,183 +233,103 @@ function clearSessionUrl() {
   window.history.replaceState({}, "", url);
 }
 
-async function createDefaultState(): Promise<Partial<AgentState>> {
-  const savedModel = await storage.settings.get<Model<any>>(DEFAULT_MODEL_KEY);
+async function createSession(sessionId?: string) {
+  if (sessionId) {
+    try {
+      const response = await fetch(
+        `${env.VITE_SERVER_URL}/sessions/${encodeURIComponent(sessionId)}`,
+      );
+      if (response.ok) {
+        return (await response.json()) as ServerSessionSnapshot;
+      }
+    } catch {
+      // fall through and create a new session
+    }
+  }
 
-  return {
-    systemPrompt: SYSTEM_PROMPT,
-    model: savedModel || getModel("anthropic", "claude-sonnet-4-5-20250929"),
-    thinkingLevel: "off",
-    messages: [],
-    tools: [],
-  };
+  const response = await fetch(`${env.VITE_SERVER_URL}/sessions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+
+  return (await response.json()) as ServerSessionSnapshot;
 }
 
 export default function PiChatApp() {
   const panelHostRef = useRef<HTMLDivElement | null>(null);
   const chatPanelRef = useRef<ChatPanel | null>(null);
-  const unsubscribeRef = useRef<(() => void) | undefined>(undefined);
-  const sessionRef = useRef<SessionRefs>({ currentTitle: "" });
+  const sessionRef = useRef<{
+    session?: RemoteChatSession;
+    currentTitle: string;
+  }>({ currentTitle: "" });
 
   const [currentTitle, setCurrentTitle] = useState("");
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const [isLoading, setIsLoading] = useState(true);
 
-  const headerTitle = currentTitle || "Pi Chat";
+  const bindSession = useCallback(async (snapshot: ServerSessionSnapshot) => {
+    const chatPanel = chatPanelRef.current;
+    if (!chatPanel) return;
 
-  const saveSession = useCallback(async () => {
-    const { agent, currentSessionId, currentTitle } = sessionRef.current;
-    if (!agent || !currentSessionId || !currentTitle) return;
+    sessionRef.current.session?.dispose();
+    sessionRef.current.session = new RemoteChatSession(
+      snapshot.sessionId,
+      snapshot,
+    );
+    sessionRef.current.currentTitle = snapshot.title || "";
+    setCurrentTitle(snapshot.title || "");
 
-    const state = agent.state;
-    if (!shouldSaveSession(state.messages)) return;
-
-    const createdAt = new Date().toISOString();
-    const sessionData = {
-      id: currentSessionId,
-      title: currentTitle,
-      model: state.model,
-      thinkingLevel: state.thinkingLevel,
-      messages: state.messages,
-      createdAt,
-      lastModified: createdAt,
-    };
-
-    const metadata = {
-      id: currentSessionId,
-      title: currentTitle,
-      createdAt,
-      lastModified: createdAt,
-      messageCount: state.messages.length,
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
-      modelId: state.model.id || null,
-      thinkingLevel: state.thinkingLevel,
-      preview: generateTitle(state.messages),
-    };
-
-    try {
-      await storage.sessions.save(sessionData, metadata);
-    } catch (error) {
-      console.error("Failed to save session:", error);
-    }
-  }, []);
-
-  const createAgent = useCallback(
-    async (initialState?: Partial<AgentState>) => {
-      const chatPanel = chatPanelRef.current;
-      if (!chatPanel) return;
-
-      unsubscribeRef.current?.();
-
-      const agent = new Agent({
-        initialState: initialState || (await createDefaultState()),
-      });
-
-      sessionRef.current.agent = agent;
-      unsubscribeRef.current = agent.subscribe((event) => {
-        if (event.type === "message_end") {
-          agent.state.messages = [...agent.state.messages];
+    sessionRef.current.session.subscribe((event) => {
+      if (event.type === "snapshot") {
+        const nextSnapshot = event.snapshot as ServerSessionSnapshot;
+        sessionRef.current.currentTitle = nextSnapshot.title || "";
+        setCurrentTitle(nextSnapshot.title || "");
+        if (nextSnapshot.sessionId) {
+          updateUrl(nextSnapshot.sessionId);
         }
-
-        if (event.type !== "message_end" && event.type !== "agent_end") return;
-
-        const messages = agent.state.messages;
-        if (!sessionRef.current.currentTitle && shouldSaveSession(messages)) {
-          const nextTitle = generateTitle(messages);
-          sessionRef.current.currentTitle = nextTitle;
-          setCurrentTitle(nextTitle);
-        }
-
-        if (!sessionRef.current.currentSessionId && shouldSaveSession(messages)) {
-          const sessionId = crypto.randomUUID();
-          sessionRef.current.currentSessionId = sessionId;
-          updateUrl(sessionId);
-        }
-
-        if (sessionRef.current.currentSessionId) {
-          void saveSession();
-        }
-
-        if (event.type === "agent_end") {
-          void agent.waitForIdle().then(() => {
-            if (sessionRef.current.agent !== agent) return;
-            chatPanel.agentInterface?.requestUpdate();
-          });
-        }
-      });
-
-      await chatPanel.setAgent(agent, {
-        onApiKeyRequired: async (provider: string) => {
-          return await ApiKeyPromptDialog.prompt(provider);
-        },
-        onModelSelect: () => {
-          ModelSelector.open(agent.state.model, (model) => {
-            agent.state.model = model;
-            void storage.settings.set(DEFAULT_MODEL_KEY, model);
-            void saveSession();
-            chatPanel.agentInterface?.requestUpdate();
-          });
-        },
-        toolsFactory: (_agent, _agentInterface, _artifactsPanel, runtimeProvidersFactory) => {
-          const replTool = createJavaScriptReplTool();
-          replTool.runtimeProvidersFactory = runtimeProvidersFactory;
-          return [replTool];
-        },
-      });
-    },
-    [saveSession],
-  );
-
-  const loadSession = useCallback(
-    async (sessionId: string) => {
-      const sessionData = await storage.sessions.get(sessionId);
-      if (!sessionData) {
-        console.error("Session not found:", sessionId);
-        return false;
       }
+    });
 
-      const metadata = await storage.sessions.getMetadata(sessionId);
-      const title = metadata?.title || "";
-      sessionRef.current.currentSessionId = sessionId;
-      sessionRef.current.currentTitle = title;
-      setCurrentTitle(title);
+    await chatPanel.setAgent(sessionRef.current.session as unknown as Agent, {
+      onApiKeyRequired: async () => true,
+      onModelSelect: () => {},
+    });
 
-      await createAgent({
-        model: sessionData.model,
-        thinkingLevel: sessionData.thinkingLevel,
-        messages: sessionData.messages,
-        tools: [],
-      });
+    if (chatPanel.agentInterface) {
+      chatPanel.agentInterface.enableAttachments = false;
+      chatPanel.agentInterface.enableModelSelector = false;
+      chatPanel.agentInterface.enableThinkingSelector = false;
+      chatPanel.agentInterface.requestUpdate();
+    }
 
-      updateUrl(sessionId);
-      return true;
-    },
-    [createAgent],
-  );
+    chatPanel.requestUpdate();
+  }, []);
 
   const startNewSession = useCallback(async () => {
     clearSessionUrl();
-    sessionRef.current.currentSessionId = undefined;
     sessionRef.current.currentTitle = "";
+    sessionRef.current.session?.dispose();
+    sessionRef.current.session = undefined;
     setCurrentTitle("");
     setDraftTitle("");
     setIsEditingTitle(false);
-    await createAgent();
-  }, [createAgent]);
+
+    const snapshot = await createSession();
+    updateUrl(snapshot.sessionId);
+    await bindSession(snapshot);
+  }, [bindSession]);
 
   const commitTitle = useCallback(async () => {
     const nextTitle = draftTitle.trim();
-    const sessionId = sessionRef.current.currentSessionId;
-    if (nextTitle && sessionId && nextTitle !== sessionRef.current.currentTitle) {
-      await storage.sessions.updateTitle(sessionId, nextTitle);
+    const session = sessionRef.current.session;
+    if (nextTitle && session && nextTitle !== sessionRef.current.currentTitle) {
+      await session.setSessionName(nextTitle);
       sessionRef.current.currentTitle = nextTitle;
       setCurrentTitle(nextTitle);
     }
@@ -308,26 +341,8 @@ export default function PiChatApp() {
     setIsEditingTitle(false);
   }, []);
 
-  const openSessions = useCallback(() => {
-    SessionListDialog.open(
-      async (sessionId) => {
-        await loadSession(sessionId);
-      },
-      (deletedSessionId) => {
-        if (deletedSessionId === sessionRef.current.currentSessionId) {
-          void startNewSession();
-        }
-      },
-    );
-  }, [loadSession, startNewSession]);
-
-  const openSettings = useCallback(() => {
-    SettingsDialog.open([new ProvidersModelsTab(), new ProxyTab()]);
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
-    registerPiMessages();
 
     const chatPanel = new ChatPanel();
     chatPanel.classList.add("min-h-0", "flex-1");
@@ -336,13 +351,14 @@ export default function PiChatApp() {
 
     const init = async () => {
       try {
-        const sessionId = new URLSearchParams(window.location.search).get("session");
-        if (sessionId) {
-          const loaded = await loadSession(sessionId);
-          if (!loaded) await startNewSession();
-        } else {
-          await createAgent();
+        const sessionId = new URLSearchParams(window.location.search).get(
+          "session",
+        );
+        const snapshot = await createSession(sessionId || undefined);
+        if (snapshot.sessionId !== sessionId) {
+          updateUrl(snapshot.sessionId);
         }
+        await bindSession(snapshot);
       } catch (error) {
         console.error("Failed to initialize Pi chat:", error);
       } finally {
@@ -354,13 +370,12 @@ export default function PiChatApp() {
 
     return () => {
       cancelled = true;
-      unsubscribeRef.current?.();
-      unsubscribeRef.current = undefined;
-      sessionRef.current.agent?.abort();
+      sessionRef.current.session?.abort();
+      sessionRef.current.session?.dispose();
       chatPanel.remove();
       chatPanelRef.current = null;
     };
-  }, [createAgent, loadSession, startNewSession]);
+  }, [bindSession]);
 
   const titleEditor = isEditingTitle ? (
     <div className="flex min-w-0 items-center gap-1">
@@ -408,7 +423,7 @@ export default function PiChatApp() {
       {currentTitle}
     </Button>
   ) : (
-    <div className="truncate px-2 text-sm font-semibold">{headerTitle}</div>
+    <div className="truncate px-2 text-sm font-semibold">Pi Chat</div>
   );
 
   return (
@@ -419,33 +434,12 @@ export default function PiChatApp() {
             type="button"
             variant="ghost"
             size="icon-sm"
-            title="Sessions"
-            onClick={openSessions}
-          >
-            <History />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
             title="New session"
             onClick={() => void startNewSession()}
           >
             <Plus />
           </Button>
           {titleEditor}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-1 px-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            title="Settings"
-            onClick={openSettings}
-          >
-            <Settings />
-          </Button>
         </div>
       </header>
 
