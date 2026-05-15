@@ -91,7 +91,7 @@ export default function PiChatApp() {
     if (chatPanel.agentInterface) {
       chatPanel.agentInterface.enableAttachments = false;
       chatPanel.agentInterface.enableModelSelector = true;
-      chatPanel.agentInterface.enableThinkingSelector = false;
+      chatPanel.agentInterface.enableThinkingSelector = true;
       chatPanel.agentInterface.requestUpdate();
     }
 

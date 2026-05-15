@@ -21,10 +21,9 @@ Complete:
 Not complete / intentionally deferred:
 
 - Session list/load/delete UI is not implemented; only current/new session + URL session load exists.
+- Thinking selector is disabled.
+- Web bundle still includes Pi AI provider code because pi-web-ui/types pull it in, but the runtime authority is no longer in browser.
 - Attachments are disabled.
 - Artifacts/browser tools are disabled/not migrated.
-- Thinking selector is disabled.
-- OAuth login flow is not implemented; server uses existing local apps/server/.auth/oauth.json.
-- Web bundle still includes Pi AI provider code because pi-web-ui/types pull it in, but the runtime authority is no longer in browser.
 
 So: the authoritative agent runtime migration is complete enough. The remaining work is feature restoration around it, not moving the agent loop.
