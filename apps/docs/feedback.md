@@ -20,8 +20,8 @@ Complete:
 
 Not complete / intentionally deferred:
 
-- Session list/load/delete UI is not implemented; only current/new session + URL session load exists.
-- Thinking selector is disabled.
+- Done: Session list/load/delete UI is not implemented; only current/new session + URL session load exists.
+- Done: Thinking selector is disabled.
 - Web bundle still includes Pi AI provider code because pi-web-ui/types pull it in, but the runtime authority is no longer in browser.
 - Attachments are disabled.
 - Artifacts/browser tools are disabled/not migrated.

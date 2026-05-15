@@ -1,5 +1,5 @@
 import { env } from "@skyclad-bun/env/web";
-import type { Agent, AgentEvent, AgentMessage, AgentState } from "@earendil-works/pi-agent-core";
+import type { AgentEvent, AgentMessage, AgentState } from "@earendil-works/pi-agent-core";
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -322,10 +322,6 @@ export class RemoteChatSession {
   private patchReadonlyState(patch: Partial<AgentState>) {
     Object.assign(this.state as any, patch);
   }
-}
-
-export function toAgent(session: RemoteChatSession): Agent {
-  return session as unknown as Agent;
 }
 
 export async function listSessions() {
