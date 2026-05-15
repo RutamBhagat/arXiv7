@@ -1,4 +1,4 @@
-import { db, eq } from "@skyclad-bun/db";
+import { db, desc, eq } from "@skyclad-bun/db";
 import { agentSessions } from "@skyclad-bun/db/schema/index";
 import { Elysia, t } from "elysia";
 
@@ -6,6 +6,7 @@ import {
   abortAgent,
   assertAllowedModel,
   createAgent,
+  deleteAgent,
   getAgent,
   getOrCreateAgent,
   streamPrompt,
@@ -104,6 +105,19 @@ async function persistPromptResult(row: AgentSessionRow) {
 }
 
 export const agentRoutes = new Elysia({ prefix: "/api/agent" })
+  .get("/sessions", async () => {
+    const rows = await db
+      .select({
+        sessionId: agentSessions.id,
+        title: agentSessions.title,
+        createdAt: agentSessions.createdAt,
+        updatedAt: agentSessions.updatedAt,
+      })
+      .from(agentSessions)
+      .orderBy(desc(agentSessions.updatedAt));
+
+    return { sessions: rows };
+  })
   .post("/sessions", async () => {
     const sessionId = crypto.randomUUID();
     const now = new Date();
@@ -185,6 +199,18 @@ export const agentRoutes = new Elysia({ prefix: "/api/agent" })
     }
 
     abortAgent(params.sessionId);
+    return { ok: true };
+  })
+  .delete("/sessions/:sessionId", async ({ params, set }) => {
+    const row = await findSession(params.sessionId);
+    if (!row) {
+      set.status = 404;
+      return { error: "session_not_found" };
+    }
+
+    deleteAgent(params.sessionId);
+    await db.delete(agentSessions).where(eq(agentSessions.id, params.sessionId));
+
     return { ok: true };
   })
   .patch(

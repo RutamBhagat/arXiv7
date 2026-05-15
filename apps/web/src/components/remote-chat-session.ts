@@ -15,6 +15,13 @@ export type ServerSessionSnapshot = {
   isStreaming: boolean;
 };
 
+export type ServerSessionListItem = {
+  sessionId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export class RemoteChatSession {
   public state: AgentState;
   public streamFn?: unknown;
@@ -321,15 +328,44 @@ export function toAgent(session: RemoteChatSession): Agent {
   return session as unknown as Agent;
 }
 
+export async function listSessions() {
+  const response = await fetch(`${env.VITE_SERVER_URL}/api/agent/sessions`);
+
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+
+  const body = (await response.json()) as { sessions: ServerSessionListItem[] };
+  return body.sessions;
+}
+
+export async function deleteSession(sessionId: string) {
+  const response = await fetch(
+    `${env.VITE_SERVER_URL}/api/agent/sessions/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+  );
+
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+}
+
+export async function loadSessionSnapshot(sessionId: string) {
+  const response = await fetch(
+    `${env.VITE_SERVER_URL}/api/agent/sessions/${encodeURIComponent(sessionId)}`,
+  );
+
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+
+  return (await response.json()) as ServerSessionSnapshot;
+}
+
 export async function createSession(sessionId?: string) {
   if (sessionId) {
     try {
-      const response = await fetch(
-        `${env.VITE_SERVER_URL}/api/agent/sessions/${encodeURIComponent(sessionId)}`,
-      );
-      if (response.ok) {
-        return (await response.json()) as ServerSessionSnapshot;
-      }
+      return await loadSessionSnapshot(sessionId);
     } catch {
       // fall through and create a new session
     }

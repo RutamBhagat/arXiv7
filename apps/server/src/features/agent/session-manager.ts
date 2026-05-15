@@ -99,6 +99,11 @@ export function abortAgent(sessionId: string) {
   activeAgents.get(sessionId)?.abort();
 }
 
+export function deleteAgent(sessionId: string) {
+  activeAgents.get(sessionId)?.abort();
+  activeAgents.delete(sessionId);
+}
+
 export function assertAllowedModel(model: unknown) {
   if (!isAllowedModel(model)) {
     throw new Error(
